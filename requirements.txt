@@ -1,0 +1,19 @@
+# WebinarAI Python Dependencies
+
+# Prompt 1: Core Web Framework
+Flask>=3.0.0
+python-dotenv>=1.0.0
+
+# Prompt 2: Database Connectivity & Security
+Flask-SQLAlchemy>=3.1.0
+PyMySQL>=1.1.0
+cryptography>=42.0.0
+
+# Prompt 4: Speech-to-Text Transcription
+openai-whisper>=20250625
+
+# Prompt 5: AI Summarization using Google Gemini API
+google-genai>=0.1.0
+
+# Prompt 6: PDF Summary Generation
+reportlab>=4.1.0

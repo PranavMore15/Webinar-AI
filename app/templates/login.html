@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In — WebinarAI{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center align-items-center my-auto py-5">
+    <div class="col-12 col-sm-10 col-md-8 col-lg-5 col-xl-4">
+        <div class="card shadow-lg border-0 rounded-4 overflow-hidden">
+            <!-- Header Banner -->
+            <div id="loginBanner" class="p-4 text-center text-white {{ 'bg-dark bg-gradient' if login_type == 'admin' else 'bg-primary bg-gradient' }}">
+                <div class="display-6 mb-2">
+                    <i id="loginIcon" class="bi {{ 'bi-shield-lock-fill text-warning' if login_type == 'admin' else 'bi-person-badge-fill' }}"></i>
+                </div>
+                <h4 id="loginTitle" class="fw-bold mb-1">{{ 'Administrator Console' if login_type == 'admin' else 'User Sign In' }}</h4>
+                <p id="loginSubtitle" class="small text-white-50 mb-0">
+                    {{ 'System administrative control & auditing' if login_type == 'admin' else 'Post-webinar summarization & knowledge distribution' }}
+                </p>
+            </div>
+            
+            <div class="card-body p-4 p-md-5">
+                <!-- Role Selector Tabs -->
+                <ul class="nav nav-pills nav-fill mb-4 bg-light p-1 rounded-3 small">
+                    <li class="nav-item">
+                        <button type="button" class="nav-link py-2 {{ 'active' if login_type != 'admin' else '' }}" id="userTabBtn" onclick="switchLoginMode('user')">
+                            <i class="bi bi-person me-1"></i> User Login
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button type="button" class="nav-link py-2 {{ 'active' if login_type == 'admin' else '' }}" id="adminTabBtn" onclick="switchLoginMode('admin')">
+                            <i class="bi bi-shield-shaded me-1"></i> Admin Login
+                        </button>
+                    </li>
+                </ul>
+
+                <form action="{{ url_for('auth.login', next=request.args.get('next')) }}" method="POST" novalidate>
+                    <input type="hidden" name="login_type" id="loginTypeInput" value="{{ login_type or 'user' }}">
+
+                    <div class="mb-3">
+                        <label for="username" class="form-label fw-semibold text-secondary small">Username or Email</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-light border-end-0 text-muted"><i class="bi bi-person"></i></span>
+                            <input type="text" class="form-control border-start-0 ps-0" id="username" name="username" placeholder="Username or email address" value="{{ username or '' }}" required autofocus>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="password" class="form-label fw-semibold text-secondary small">Password</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-light border-end-0 text-muted"><i class="bi bi-key"></i></span>
+                            <input type="password" class="form-control border-start-0 ps-0" id="password" name="password" placeholder="••••••••" required>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" id="submitBtn" class="btn w-100 py-2 fw-semibold rounded-3 shadow-sm d-flex align-items-center justify-content-center gap-2 {{ 'btn-dark' if login_type == 'admin' else 'btn-primary' }}">
+                        <span id="submitBtnText">{{ 'Sign In to Admin Console' if login_type == 'admin' else 'Sign In to Workspace' }}</span>
+                        <i class="bi bi-arrow-right"></i>
+                    </button>
+                </form>
+
+                <!-- Navigation between login and registration -->
+                <div class="mt-4 pt-3 border-top text-center">
+                    <span class="text-muted small">Need an account?</span>
+                    <a href="{{ url_for('auth.register') }}" class="small fw-semibold text-primary text-decoration-none ms-1">
+                        Create an account <i class="bi bi-arrow-up-right"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchLoginMode(mode) {
+    const isModeAdmin = (mode === 'admin');
+    document.getElementById('loginTypeInput').value = isModeAdmin ? 'admin' : 'user';
+    
+    // Toggle active tabs
+    document.getElementById('userTabBtn').classList.toggle('active', !isModeAdmin);
+    document.getElementById('adminTabBtn').classList.toggle('active', isModeAdmin);
+
+    // Update banner styling
+    const banner = document.getElementById('loginBanner');
+    const icon = document.getElementById('loginIcon');
+    const title = document.getElementById('loginTitle');
+    const subtitle = document.getElementById('loginSubtitle');
+    const submitBtn = document.getElementById('submitBtn');
+    const submitBtnText = document.getElementById('submitBtnText');
+
+    if (isModeAdmin) {
+        banner.className = 'p-4 text-center text-white bg-dark bg-gradient';
+        icon.className = 'bi bi-shield-lock-fill text-warning';
+        title.textContent = 'Administrator Console';
+        subtitle.textContent = 'System administrative control & auditing';
+        submitBtn.className = 'btn btn-dark w-100 py-2 fw-semibold rounded-3 shadow-sm d-flex align-items-center justify-content-center gap-2';
+        submitBtnText.textContent = 'Sign In to Admin Console';
+    } else {
+        banner.className = 'p-4 text-center text-white bg-primary bg-gradient';
+        icon.className = 'bi bi-person-badge-fill';
+        title.textContent = 'User Sign In';
+        subtitle.textContent = 'Post-webinar summarization & knowledge distribution';
+        submitBtn.className = 'btn btn-primary w-100 py-2 fw-semibold rounded-3 shadow-sm d-flex align-items-center justify-content-center gap-2';
+        submitBtnText.textContent = 'Sign In to Workspace';
+    }
+}
+</script>
+{% endblock %}

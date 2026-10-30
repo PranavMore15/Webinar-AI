@@ -1,0 +1,8 @@
+email,name
+alice.smith@university.edu,Alice Smith
+bob.jones@university.edu,Bob Jones
+carol.danvers@university.edu,Carol Danvers
+ALICE.SMITH@UNIVERSITY.EDU,Alice Duplicate
+invalid-email-syntax,Invalid Student
+,Blank Student
+david.wilson@university.edu,David Wilson

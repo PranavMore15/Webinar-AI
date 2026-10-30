@@ -1,0 +1,991 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — WebinarAI{% endblock %}
+
+{% block content %}
+<div class="py-2">
+    <!-- Dashboard Header -->
+    <div class="row align-items-center mb-4 g-3">
+        <div class="col-12 col-md-8">
+            <h2 class="fw-bold text-dark tracking-tight mb-1">
+                <i class="bi bi-speedometer2 text-primary me-2"></i>Webinar Processing & Distribution Dashboard
+            </h2>
+            <p class="text-muted mb-0 small">
+                Upload existing webinar recordings or transcripts, validate recipient email lists, and trigger automated knowledge distribution.
+            </p>
+        </div>
+        <div class="col-12 col-md-4 text-md-end">
+            <span class="badge bg-white text-dark border shadow-sm px-3 py-2 rounded-pill small">
+                <i class="bi bi-person-circle text-primary me-1"></i> User: <strong>{{ username }}</strong>
+                <span class="badge {{ 'bg-danger-subtle text-danger' if session.get('role') == 'admin' else 'bg-primary-subtle text-primary' }} rounded-pill ms-1">{{ 'Admin' if session.get('role') == 'admin' else 'User' }}</span>
+            </span>
+        </div>
+    </div>
+
+    <!-- Core Upload Section: Two Independent Columns -->
+    <div class="row g-4 mb-4">
+        <!-- Section A: Upload Webinar Content -->
+        <div class="col-12 col-lg-6">
+            <div class="card h-100 shadow-sm border-0 rounded-4 card-upload">
+                <div class="card-header bg-white border-bottom py-3 px-4 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-primary-subtle text-primary p-2 rounded-3">
+                            <i class="bi bi-film fs-5"></i>
+                        </span>
+                        <div>
+                            <h5 class="fw-bold mb-0 text-dark">Section A: Webinar Content</h5>
+                            <span class="text-muted small">Select MP4 video OR text transcript (mutually exclusive)</span>
+                        </div>
+                    </div>
+                    <span id="webinarStatusBadge" class="badge bg-secondary-subtle text-secondary rounded-pill px-3 py-1">
+                        <i class="bi bi-hourglass-split me-1"></i> Pending Input
+                    </span>
+                </div>
+                
+                <div class="card-body p-4 d-flex flex-column">
+                    <!-- Mutually Exclusive Radio Selector -->
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold text-secondary small text-uppercase">Input Source Mode</label>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <input type="radio" class="btn-check" name="webinarSourceType" id="sourceTypeVideo" value="video" checked autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3" for="sourceTypeVideo">
+                                    <i class="bi bi-camera-video-fill"></i>
+                                    <span>Video (.mp4)</span>
+                                </label>
+                            </div>
+                            <div class="col-6">
+                                <input type="radio" class="btn-check" name="webinarSourceType" id="sourceTypeTranscript" value="transcript" autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3" for="sourceTypeTranscript">
+                                    <i class="bi bi-file-earmark-text-fill"></i>
+                                    <span>Transcript (.txt/.vtt)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Video Upload Area (Option 1) -->
+                    <div id="videoUploadContainer" class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3">
+                        <i class="bi bi-cloud-arrow-up display-6 text-primary mb-2 d-block"></i>
+                        <h6 class="fw-bold mb-1">Select Webinar MP4 Video</h6>
+                        <p class="text-muted small mb-3">Standard recording format supported (.mp4)</p>
+                        <input type="file" id="videoFileInput" class="d-none" accept=".mp4,video/mp4">
+                        <button type="button" class="btn btn-sm btn-primary rounded-pill px-4" onclick="document.getElementById('videoFileInput').click()">
+                            <i class="bi bi-folder2-open me-1"></i> Browse MP4 File
+                        </button>
+                    </div>
+
+                    <!-- Transcript Upload Area (Option 2 - Hidden by default) -->
+                    <div id="transcriptUploadContainer" class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3 d-none">
+                        <i class="bi bi-file-earmark-code display-6 text-indigo mb-2 d-block"></i>
+                        <h6 class="fw-bold mb-1">Select Webinar Transcript</h6>
+                        <p class="text-muted small mb-3">Plain text or WebVTT subtitle files (.txt, .vtt)</p>
+                        <input type="file" id="transcriptFileInput" class="d-none" accept=".txt,.vtt,text/plain,text/vtt">
+                        <button type="button" class="btn btn-sm btn-primary rounded-pill px-4" onclick="document.getElementById('transcriptFileInput').click()">
+                            <i class="bi bi-folder2-open me-1"></i> Browse Transcript File
+                        </button>
+                    </div>
+
+                    <!-- Loading Indicator for Webinar Upload & Verification -->
+                    <div id="webinarLoadingSpinner" class="d-none text-center py-4 my-2">
+                        <div class="spinner-border text-primary" role="status" style="width: 2.2rem; height: 2.2rem;">
+                            <span class="visually-hidden">Uploading...</span>
+                        </div>
+                        <div class="small fw-semibold text-secondary mt-2">Uploading & Verifying Webinar Media on Server...</div>
+                    </div>
+
+                    <!-- Webinar Error State Alert -->
+                    <div id="webinarErrorAlert" class="alert alert-danger border-0 d-none mt-2 small shadow-sm rounded-3">
+                        <div class="d-flex align-items-start gap-2">
+                            <i class="bi bi-exclamation-triangle-fill fs-5 mt-1"></i>
+                            <div>
+                                <strong id="webinarErrorTitle">Media Upload Error</strong>
+                                <div id="webinarErrorMessage">Error details</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Selected File Info Card -->
+                    <div id="webinarFileDetails" class="alert alert-light border rounded-3 p-3 d-none mt-auto">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div class="d-flex align-items-center gap-2 overflow-hidden">
+                                <i id="webinarFileIcon" class="bi bi-file-earmark-play fs-4 text-primary"></i>
+                                <div class="text-truncate">
+                                    <div id="webinarFileName" class="fw-bold text-dark text-truncate">file.mp4</div>
+                                    <div class="text-muted small">
+                                        Size: <span id="webinarFileSize">0 MB</span> &bull; Type: <span id="webinarFileTypeBadge" class="badge text-bg-light border">MP4</span> &bull; <span class="badge text-bg-primary-subtle text-primary border border-primary-subtle">Server Verified</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-danger border-0 rounded-circle" id="btnRemoveWebinarFile" title="Remove or replace file">
+                                <i class="bi bi-x-circle-fill fs-5"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section B: Upload Student Email CSV -->
+        <div class="col-12 col-lg-6">
+            <div class="card h-100 shadow-sm border-0 rounded-4 card-upload">
+                <div class="card-header bg-white border-bottom py-3 px-4 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-success-subtle text-success p-2 rounded-3">
+                            <i class="bi bi-people-fill fs-5"></i>
+                        </span>
+                        <div>
+                            <h5 class="fw-bold mb-0 text-dark">Section B: Student Email List</h5>
+                            <span class="text-muted small">Upload recipient CSV or add individual emails manually</span>
+                        </div>
+                    </div>
+                    <span id="csvStatusBadge" class="badge bg-secondary-subtle text-secondary rounded-pill px-3 py-1">
+                        <i class="bi bi-hourglass-split me-1"></i> Pending Recipients
+                    </span>
+                </div>
+                
+                <div class="card-body p-4 d-flex flex-column">
+                    <!-- Recipient Source Mode Selector Tabs -->
+                    <ul class="nav nav-pills nav-fill mb-3 bg-light p-1 rounded-3" id="recipientModeTabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active py-1.5 px-3 small fw-semibold" id="tabModeCsv" data-bs-toggle="pill" data-bs-target="#paneModeCsv" type="button" role="tab">
+                                <i class="bi bi-file-earmark-spreadsheet me-1"></i> Upload CSV File
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link py-1.5 px-3 small fw-semibold" id="tabModeManual" data-bs-toggle="pill" data-bs-target="#paneModeManual" type="button" role="tab">
+                                <i class="bi bi-person-plus-fill me-1"></i> Add Email Manually
+                            </button>
+                        </li>
+                    </ul>
+
+                    <div class="tab-content mb-3" id="recipientModeContent">
+                        <!-- Pane 1: CSV Upload -->
+                        <div class="tab-pane fade show active" id="paneModeCsv" role="tabpanel">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label class="form-label fw-semibold text-secondary small text-uppercase mb-0">Recipient File (.csv)</label>
+                                <span class="text-muted small"><i class="bi bi-info-circle me-1"></i>Format: <code>email,name</code></span>
+                            </div>
+                            <div class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light">
+                                <i class="bi bi-file-earmark-spreadsheet display-6 text-success mb-2 d-block"></i>
+                                <h6 class="fw-bold mb-1">Upload Student Email CSV</h6>
+                                <p class="text-muted small mb-3">Accepts .csv with at least an <code>email</code> column</p>
+                                <input type="file" id="csvFileInput" class="d-none" accept=".csv,text/csv">
+                                <button type="button" class="btn btn-sm btn-success rounded-pill px-4" onclick="document.getElementById('csvFileInput').click()">
+                                    <i class="bi bi-upload me-1"></i> Browse CSV File
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Pane 2: Manual Individual Email Entry -->
+                        <div class="tab-pane fade" id="paneModeManual" role="tabpanel">
+                            <div class="p-3 border rounded-3 bg-light">
+                                <h6 class="fw-bold mb-1 text-dark small"><i class="bi bi-person-plus text-success me-1"></i> Add Individual Recipient</h6>
+                                <p class="text-muted small mb-3">Manually add student email to active list. Duplicates will be detected automatically.</p>
+                                <form id="formAddManualRecipient" onsubmit="return false;">
+                                    <div class="row g-2 align-items-end">
+                                        <div class="col-12 col-sm-6">
+                                            <label for="manualEmailInput" class="form-label small fw-semibold text-secondary mb-1">Email Address <span class="text-danger">*</span></label>
+                                            <input type="email" class="form-control form-control-sm rounded-3" id="manualEmailInput" placeholder="student@university.edu" required autocomplete="off">
+                                        </div>
+                                        <div class="col-12 col-sm-4">
+                                            <label for="manualNameInput" class="form-label small fw-semibold text-secondary mb-1">Student Name <span class="text-muted small">(Optional)</span></label>
+                                            <input type="text" class="form-control form-control-sm rounded-3" id="manualNameInput" placeholder="Jane Doe" autocomplete="off">
+                                        </div>
+                                        <div class="col-12 col-sm-2">
+                                            <button type="button" class="btn btn-sm btn-success w-100 rounded-3 d-flex align-items-center justify-content-center gap-1" id="btnAddManualRecipient">
+                                                <i class="bi bi-plus-lg"></i>
+                                                <span>Add</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </form>
+                                <div id="manualEmailAlert" class="alert alert-danger border-0 d-none mt-2 mb-0 py-2 small shadow-sm rounded-3">
+                                    <i class="bi bi-info-circle-fill me-1" id="manualAlertIcon"></i>
+                                    <span id="manualAlertMessage">Alert details</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Loading Indicator for CSV Upload & Validation -->
+                    <div id="csvLoadingSpinner" class="d-none text-center py-4 my-2">
+                        <div class="spinner-border text-success" role="status" style="width: 2.2rem; height: 2.2rem;">
+                            <span class="visually-hidden">Validating...</span>
+                        </div>
+                        <div class="small fw-semibold text-secondary mt-2">Uploading & Validating CSV on Server...</div>
+                    </div>
+
+                    <!-- CSV Error State Alert -->
+                    <div id="csvErrorAlert" class="alert alert-danger border-0 d-none mt-2 small shadow-sm rounded-3">
+                        <div class="d-flex align-items-start gap-2">
+                            <i class="bi bi-exclamation-triangle-fill fs-5 mt-1"></i>
+                            <div>
+                                <strong id="csvErrorTitle">CSV Validation Error</strong>
+                                <div id="csvErrorMessage">Error details</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Selected CSV File Info Card -->
+                    <div id="csvFileDetails" class="alert alert-light border rounded-3 p-3 d-none">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div class="d-flex align-items-center gap-2 overflow-hidden">
+                                <i class="bi bi-filetype-csv fs-4 text-success"></i>
+                                <div class="text-truncate">
+                                    <div id="csvFileName" class="fw-bold text-dark text-truncate">students.csv</div>
+                                    <div class="text-muted small">Size: <span id="csvFileSize">0 KB</span> &bull; <span class="badge text-bg-success-subtle text-success border border-success-subtle">Server Verified</span></div>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-danger border-0 rounded-circle" id="btnRemoveCsvFile" title="Remove or replace file">
+                                <i class="bi bi-x-circle-fill fs-5"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- CSV Validation Summary Stats (Hidden until recipients exist) -->
+                    <div id="csvValidationCard" class="card border border-success-subtle bg-success-subtle bg-opacity-10 rounded-3 mt-auto d-none">
+                        <div class="card-body p-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="fw-bold mb-0 text-success-emphasis small">
+                                    <i class="bi bi-clipboard2-check-fill me-1"></i> Active Recipient Breakdown
+                                </h6>
+                                <div class="d-flex align-items-center gap-2">
+                                    <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none small" id="btnToggleCsvTable">
+                                        <span id="toggleTableText">Show Detailed Rows</span> <i class="bi bi-chevron-down"></i>
+                                    </button>
+                                    <button type="button" class="btn btn-outline-danger btn-sm py-0 px-2 rounded-pill small" id="btnClearAllRecipients" title="Clear all recipients from active draft">
+                                        <i class="bi bi-trash3 me-1"></i> Clear All
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- 5 Stats Counters -->
+                            <div class="row g-1 text-center small mb-2">
+                                <div class="col" style="min-width: 60px;">
+                                    <div class="p-2 bg-white rounded border">
+                                        <div class="text-muted text-truncate" style="font-size: 0.65rem;">Total Rows</div>
+                                        <div id="statTotalRows" class="fw-bold fs-6 text-dark">0</div>
+                                    </div>
+                                </div>
+                                <div class="col" style="min-width: 60px;">
+                                    <div class="p-2 bg-white rounded border border-success">
+                                        <div class="text-success text-truncate" style="font-size: 0.65rem;">Valid Unique</div>
+                                        <div id="statValidRows" class="fw-bold fs-6 text-success">0</div>
+                                    </div>
+                                </div>
+                                <div class="col" style="min-width: 60px;">
+                                    <div class="p-2 bg-white rounded border border-warning">
+                                        <div class="text-warning-emphasis text-truncate" style="font-size: 0.65rem;">Duplicates</div>
+                                        <div id="statDuplicateRows" class="fw-bold fs-6 text-warning-emphasis">0</div>
+                                    </div>
+                                </div>
+                                <div class="col" style="min-width: 60px;">
+                                    <div class="p-2 bg-white rounded border border-danger">
+                                        <div class="text-danger text-truncate" style="font-size: 0.65rem;">Malformed</div>
+                                        <div id="statInvalidRows" class="fw-bold fs-6 text-danger">0</div>
+                                    </div>
+                                </div>
+                                <div class="col" style="min-width: 60px;">
+                                    <div class="p-2 bg-white rounded border border-secondary">
+                                        <div class="text-secondary text-truncate" style="font-size: 0.65rem;">Blank</div>
+                                        <div id="statBlankRows" class="fw-bold fs-6 text-secondary">0</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Expandable / Inspectable Row Details -->
+                            <div id="csvPreviewTableContainer" class="mt-3 d-none">
+                                <ul class="nav nav-pills nav-fill small mb-2 bg-white p-1 rounded border" id="csvInspectTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active py-1 px-2 small" id="tab-valid" data-bs-toggle="pill" data-bs-target="#pane-valid" type="button" role="tab">
+                                            Valid (<span id="tabCountValid">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link py-1 px-2 small" id="tab-duplicates" data-bs-toggle="pill" data-bs-target="#pane-duplicates" type="button" role="tab">
+                                            Duplicates (<span id="tabCountDuplicates">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link py-1 px-2 small" id="tab-invalid" data-bs-toggle="pill" data-bs-target="#pane-invalid" type="button" role="tab">
+                                            Invalid/Blank (<span id="tabCountInvalid">0</span>)
+                                        </button>
+                                    </li>
+                                </ul>
+
+                                <div class="tab-content table-responsive" style="max-height: 220px; scrollbar-width: thin;">
+                                    <!-- Valid Recipients Pane -->
+                                    <div class="tab-pane fade show active" id="pane-valid" role="tabpanel">
+                                        <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border small">
+                                            <thead class="table-light sticky-top">
+                                                <tr>
+                                                    <th style="width: 45px;">Line</th>
+                                                    <th>Recipient Email</th>
+                                                    <th>Name (Optional)</th>
+                                                    <th style="width: 75px;">Source</th>
+                                                    <th style="width: 45px;" class="text-center">Action</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="tableBodyValid"></tbody>
+                                        </table>
+                                    </div>
+
+                                    <!-- Duplicates Pane -->
+                                    <div class="tab-pane fade" id="pane-duplicates" role="tabpanel">
+                                        <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border small">
+                                            <thead class="table-light sticky-top">
+                                                <tr>
+                                                    <th style="width: 45px;">Line</th>
+                                                    <th>Duplicate Email</th>
+                                                    <th>Reason</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="tableBodyDuplicates"></tbody>
+                                        </table>
+                                    </div>
+
+                                    <!-- Invalid / Blank Pane -->
+                                    <div class="tab-pane fade" id="pane-invalid" role="tabpanel">
+                                        <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border small">
+                                            <thead class="table-light sticky-top">
+                                                <tr>
+                                                    <th style="width: 45px;">Line</th>
+                                                    <th>Raw Value</th>
+                                                    <th>Rejection Reason</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="tableBodyInvalid"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Submission Action Bar -->
+    <div class="card shadow-sm border-0 rounded-4 mb-4 bg-white">
+        <div class="card-body p-4 d-flex flex-column flex-md-row justify-content-between align-items-center gap-3">
+            <div>
+                <h5 class="fw-bold mb-1 text-dark">Execution Trigger</h5>
+                <div class="d-flex flex-wrap gap-2 align-items-center small text-muted">
+                    <span>Prerequisites:</span>
+                    <span id="badgePrereqWebinar" class="badge text-bg-light border text-secondary">
+                        <i class="bi bi-circle me-1"></i> Webinar Input (Pending)
+                    </span>
+                    <span id="badgePrereqCsv" class="badge text-bg-light border text-secondary">
+                        <i class="bi bi-circle me-1"></i> Valid Recipients (Pending)
+                    </span>
+                </div>
+            </div>
+            
+            <div class="text-end">
+                <button type="button" id="btnStartProcessing" class="btn btn-primary btn-lg rounded-pill px-5 shadow-sm fw-semibold d-flex align-items-center gap-2" disabled>
+                    <i class="bi bi-play-circle-fill fs-5"></i>
+                    <span>Start Processing & Deliver Email</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section C: Processing Status & Job Lifecycle Panel -->
+    <div class="card shadow-sm border-0 rounded-4">
+        <div class="card-header bg-white border-bottom py-3 px-4 d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-info-subtle text-info-emphasis p-2 rounded-3">
+                    <i class="bi bi-activity fs-5"></i>
+                </span>
+                <div>
+                    <h5 class="fw-bold mb-0 text-dark">Section C: Processing Status & Job Lifecycle</h5>
+                    <span class="text-muted small">Real-time state tracking and error auditing</span>
+                </div>
+            </div>
+            <span class="badge bg-light text-secondary border rounded-pill px-3 py-1">
+                <i class="bi bi-broadcast me-1"></i> Live Monitor
+            </span>
+        </div>
+
+        <div class="card-body p-4">
+            <!-- Active & Recent Processing Jobs List -->
+            {% if recent_jobs %}
+            <div id="recentJobsContainer" class="table-responsive mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-dark">
+                        <i class="bi bi-list-task text-primary me-1"></i> Registered Processing Jobs (MySQL Persisted)
+                    </h6>
+                    <span class="badge bg-primary-subtle text-primary">{{ recent_jobs|length }} Job{{ 's' if recent_jobs|length != 1 else '' }}</span>
+                </div>
+                <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border small">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 70px;">Job ID</th>
+                            <th>Input Type</th>
+                            <th>Webinar Source</th>
+                            <th>Recipients</th>
+                            <th>Stage Status</th>
+                            <th>Created Timestamp</th>
+                            <th style="min-width: 110px;">PDF Summary</th>
+                            <th class="text-end pe-3" style="min-width: 155px;">Email Delivery</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in recent_jobs %}
+                        <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}">
+                            <td><span class="badge text-bg-light border font-monospace fw-bold">#{{ job.id }}</span></td>
+                            <td>
+                                {% if job.input_type == 'video' %}
+                                <span class="badge bg-primary-subtle text-primary"><i class="bi bi-camera-video-fill me-1"></i>Video (MP4)</span>
+                                {% else %}
+                                <span class="badge bg-info-subtle text-info-emphasis"><i class="bi bi-file-earmark-text-fill me-1"></i>Transcript</span>
+                                {% endif %}
+                            </td>
+                            <td class="fw-semibold text-truncate" style="max-width: 200px;" title="{{ job.input_file_name }}">
+                                {{ job.input_file_name }}
+                            </td>
+                            <td>
+                                <span class="badge bg-secondary-subtle text-secondary" id="job-recipients-cell-{{ job.id }}">
+                                    <i class="bi bi-people-fill me-1"></i>{{ job.total_recipients }} recipient{{ 's' if job.total_recipients != 1 else '' }}
+                                </span>
+                            </td>
+                            <td id="job-status-cell-{{ job.id }}">
+                                {% if job.overall_status == 'completed' %}
+                                <span class="badge bg-success-subtle text-success border border-success-subtle">
+                                    <i class="bi bi-check2-circle me-1"></i>Completed
+                                </span>
+                                {% elif job.overall_status in ['transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing'] %}
+                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                                    <span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>
+                                    {{ job.overall_status|replace('_', ' ')|capitalize }}
+                                </span>
+                                {% elif job.overall_status == 'partially_sent' %}
+                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">
+                                    <i class="bi bi-exclamation-circle-fill me-1"></i>Partial
+                                </span>
+                                {% elif job.overall_status == 'failed' %}
+                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle" title="{{ job.error_message or 'Processing Failed' }}">
+                                    <i class="bi bi-x-circle-fill me-1"></i>Failed
+                                </span>
+                                {% else %}
+                                <span class="badge bg-secondary-subtle text-secondary border">
+                                    <i class="bi bi-hourglass-split me-1"></i>{{ job.overall_status|capitalize }}
+                                </span>
+                                {% endif %}
+                            </td>
+                            <td class="text-muted small">
+                                {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '' }}
+                            </td>
+                            <td id="job-pdf-cell-{{ job.id }}">
+                                {% if job.pdf_status == 'completed' and job.pdf_path %}
+                                <a href="{{ url_for('dashboard.download_job_pdf', job_id=job.id) }}" 
+                                   class="btn btn-sm btn-outline-primary rounded-pill px-2.5 py-1 fw-semibold d-inline-flex align-items-center gap-1 shadow-xs" 
+                                   title="Download AI-Generated Summary PDF">
+                                    <i class="bi bi-file-earmark-pdf-fill text-danger"></i>
+                                    <span>Download</span>
+                                </a>
+                                {% elif job.summary_status == 'completed' %}
+                                <a href="{{ url_for('dashboard.download_job_pdf', job_id=job.id) }}" 
+                                   class="btn btn-sm btn-outline-success rounded-pill px-2.5 py-1 small fw-semibold d-inline-flex align-items-center gap-1" 
+                                   title="Generate and Download PDF">
+                                    <i class="bi bi-file-earmark-arrow-down-fill text-success"></i>
+                                    <span>Get PDF</span>
+                                </a>
+                                {% elif job.pdf_status == 'generating' %}
+                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-1">
+                                    <span class="spinner-border spinner-border-sm me-1" style="width: 0.75rem; height: 0.75rem;"></span> Generating
+                                </span>
+                                {% elif job.pdf_status == 'failed' %}
+                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="{{ job.error_message or 'PDF Generation Failed' }}">
+                                    <i class="bi bi-exclamation-triangle-fill me-1"></i> Failed
+                                </span>
+                                {% else %}
+                                <span class="badge bg-light text-muted border rounded-pill px-2 py-1">
+                                    <i class="bi bi-hourglass me-1"></i> Pending
+                                </span>
+                                {% endif %}
+                            </td>
+                            <td id="job-email-cell-{{ job.id }}" class="text-end pe-3">
+                                {% if job.email_status == 'completed' %}
+                                <div class="d-inline-flex align-items-center gap-1">
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2 py-1" title="All emails sent successfully">
+                                        <i class="bi bi-envelope-check-fill me-1"></i>Sent ({{ job.successful_emails }})
+                                    </span>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal({{ job.id }})" title="View Delivery Audit Report">
+                                        <i class="bi bi-file-text"></i>
+                                    </button>
+                                </div>
+                                {% elif job.email_status == 'partially_sent' %}
+                                <div class="d-inline-flex align-items-center gap-1">
+                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-1" title="Partially sent: {{ job.successful_emails }} sent, {{ job.failed_emails }} failed">
+                                        <i class="bi bi-exclamation-circle-fill me-1"></i>Partial ({{ job.successful_emails }}/{{ job.total_recipients }})
+                                    </span>
+                                    <button type="button" class="btn btn-sm btn-outline-warning rounded-pill px-2 py-0.5 small fw-semibold" onclick="openEmailPreFlightModal({{ job.id }}, true)" title="Retry Failed Deliveries">
+                                        <i class="bi bi-arrow-repeat me-1"></i>Retry
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal({{ job.id }})" title="View Delivery Report">
+                                        <i class="bi bi-file-text"></i>
+                                    </button>
+                                </div>
+                                {% elif job.email_status == 'sending' %}
+                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-2 py-1">
+                                    <span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span> Sending...
+                                </span>
+                                {% elif job.email_status == 'failed' %}
+                                <div class="d-inline-flex align-items-center gap-1">
+                                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="All delivery attempts failed">
+                                        <i class="bi bi-x-circle-fill me-1"></i>Failed
+                                    </span>
+                                    <button type="button" class="btn btn-sm btn-outline-danger rounded-pill px-2 py-0.5 small fw-semibold" onclick="openEmailPreFlightModal({{ job.id }}, true)" title="Retry Sending">
+                                        <i class="bi bi-arrow-repeat me-1"></i>Retry
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal({{ job.id }})" title="View Error Report">
+                                        <i class="bi bi-file-text"></i>
+                                    </button>
+                                </div>
+                                {% elif job.pdf_status == 'completed' and job.pdf_path %}
+                                <button type="button" class="btn btn-sm btn-primary rounded-pill px-2.5 py-1 fw-semibold d-inline-flex align-items-center gap-1 shadow-xs" onclick="openEmailPreFlightModal({{ job.id }}, false)" title="Send Summary PDF to Validated Recipients">
+                                    <i class="bi bi-send-fill text-white"></i>
+                                    <span>Send Emails</span>
+                                </button>
+                                {% else %}
+                                <span class="badge bg-light text-muted border rounded-pill px-2 py-1" title="Awaiting PDF summary generation">
+                                    <i class="bi bi-hourglass me-1"></i>Awaiting PDF
+                                </span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <!-- Empty State (Active when no jobs exist) -->
+            <div id="jobEmptyState" class="text-center py-5">
+                <div class="avatar-lg mx-auto mb-3 text-secondary opacity-50">
+                    <i class="bi bi-inbox-fill display-4"></i>
+                </div>
+                <h5 class="fw-bold text-dark">No Active Processing Jobs</h5>
+                <p class="text-muted small mb-3" style="max-width: 480px; margin: 0 auto;">
+                    Select a webinar recording or transcript and upload an email CSV above. Once initiated, real-time stage progression and delivery logs will appear here.
+                </p>
+                <button class="btn btn-sm btn-outline-secondary rounded-pill px-3" type="button" data-bs-toggle="collapse" data-bs-target="#lifecycleDemoCollapse">
+                    <i class="bi bi-info-circle me-1"></i> View Processing Lifecycle Guide
+                </button>
+            </div>
+            {% endif %}
+
+            {% if recent_jobs %}
+            <div class="text-end mb-2">
+                <button class="btn btn-sm btn-link text-decoration-none small text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#lifecycleDemoCollapse">
+                    <i class="bi bi-info-circle me-1"></i> View Processing Lifecycle Guide
+                </button>
+            </div>
+            {% endif %}
+
+            <!-- System Processing Lifecycle Reference (Expandable) -->
+            <div class="collapse mt-4" id="lifecycleDemoCollapse">
+                <div class="alert alert-light border rounded-3 p-3 mb-3">
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <i class="bi bi-info-circle-fill text-primary"></i>
+                        <h6 class="fw-bold mb-0 text-primary">System Processing Lifecycle Guide</h6>
+                    </div>
+                    <p class="small text-muted mb-3">
+                        WebinarAI tracks verified system milestones across each stage of knowledge extraction and distribution:
+                    </p>
+                    
+                    <!-- Lifecycle steps progression visualization -->
+                    <div class="row g-2 text-center small mb-3">
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-secondary mb-1">1. Queued</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">Job initialized</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-primary mb-1">2. Extracting Audio</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">FFmpeg extraction (MP4)</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-primary mb-1">3. Transcribing</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">Whisper speech-to-text</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-info text-white mb-1">4. Cleaning Transcript</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">VTT/TXT normalization</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-warning text-dark mb-1">5. Generating Summary</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">Google Gemini AI</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-info text-white mb-1">6. Generating PDF</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">ReportLab document</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-primary mb-1">7. Sending Emails</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">SMTP individual dispatch</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="p-2 border rounded bg-white">
+                                <span class="badge text-bg-success mb-1">8. Completed</span>
+                                <div class="text-muted" style="font-size: 0.75rem;">Delivery audit finished</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Example Actionable Error State Card -->
+                    <div class="card border border-danger-subtle bg-danger-subtle bg-opacity-10 rounded-3">
+                        <div class="card-body p-3">
+                            <div class="d-flex align-items-center gap-2 text-danger fw-bold small mb-1">
+                                <i class="bi bi-exclamation-triangle-fill"></i>
+                                <span>Example Error State Display (Part J Specification Compliance)</span>
+                            </div>
+                            <div class="text-muted small">
+                                If a stage fails (e.g., SMTP credential rejection or transcription timeout), the dashboard isolates the failure, halts email sending, and provides actionable retry capabilities without regenerating completed AI summaries.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Job Submission & Confirmation -->
+<div class="modal fade" id="triggerConfirmModal" tabindex="-1" aria-labelledby="triggerModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content rounded-4 border-0 shadow">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title fw-bold" id="triggerModalLabel">
+                    <i class="bi bi-check2-circle me-1"></i> Confirm Webinar Processing Job
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="alert alert-success border-0 bg-success-subtle text-success-emphasis rounded-3 mb-3">
+                    <i class="bi bi-shield-check me-1"></i> <strong>Server Pre-Validation Passed!</strong><br>
+                    Both independent upload requirements have been verified on the server.
+                </div>
+                
+                <h6 class="fw-bold text-dark mb-2">Verified Job Inputs:</h6>
+                <ul class="list-group list-group-flush small mb-3 border rounded">
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span class="text-muted">Webinar Media:</span>
+                        <strong id="modalWebinarName" class="text-dark text-truncate" style="max-width: 250px;">Sample</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span class="text-muted">Input Type:</span>
+                        <span id="modalWebinarType" class="badge text-bg-light border">Video</span>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span class="text-muted">Valid Unique Recipients:</span>
+                        <span id="modalRecipientCount" class="badge text-bg-success">0</span>
+                    </li>
+                </ul>
+
+                <!-- Live Processing Progress Container -->
+                <div id="modalProcessingProgress" class="d-none mt-3 p-3 bg-light rounded-3 border">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <span class="small fw-bold text-dark d-flex align-items-center gap-2">
+                            <span class="spinner-border spinner-border-sm text-primary" id="progressSpinner" role="status"></span>
+                            <span id="progressCurrentStage">Starting automated pipeline...</span>
+                        </span>
+                        <span class="badge bg-primary rounded-pill px-2.5 py-1" id="progressPercentageBadge">0%</span>
+                    </div>
+                    <div class="progress mb-3" style="height: 10px; border-radius: 6px;">
+                        <div id="modalProgressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" role="progressbar" style="width: 0%; transition: width 0.4s ease;"></div>
+                    </div>
+                    <div class="row g-2 text-center" style="font-size: 0.72rem;">
+                        <div class="col-3">
+                            <div id="stepCardTranscript" class="p-2 rounded border bg-white">
+                                <i class="bi bi-file-earmark-text d-block fs-6 text-muted mb-1" id="stepIconTranscript"></i>
+                                <span class="fw-semibold d-block" id="stepTextTranscript">1. Ingest Media</span>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <div id="stepCardSummary" class="p-2 rounded border bg-white">
+                                <i class="bi bi-stars d-block fs-6 text-muted mb-1" id="stepIconSummary"></i>
+                                <span class="fw-semibold d-block" id="stepTextSummary">2. AI Summary</span>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <div id="stepCardPdf" class="p-2 rounded border bg-white">
+                                <i class="bi bi-file-earmark-pdf d-block fs-6 text-muted mb-1" id="stepIconPdf"></i>
+                                <span class="fw-semibold d-block" id="stepTextPdf">3. PDF Brief</span>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <div id="stepCardEmail" class="p-2 rounded border bg-white">
+                                <i class="bi bi-envelope-check d-block fs-6 text-muted mb-1" id="stepIconEmail"></i>
+                                <span class="fw-semibold d-block" id="stepTextEmail">4. Delivery</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="modalCompletionActions" class="d-none mt-3 pt-2 border-top d-flex gap-2 justify-content-end align-items-center">
+                        <span class="small text-success fw-semibold me-auto"><i class="bi bi-check2-circle me-1"></i> Pipeline Complete!</span>
+                        <a id="btnModalDownloadPdf" href="#" class="btn btn-sm btn-outline-primary rounded-pill px-3 fw-semibold">
+                            <i class="bi bi-file-earmark-pdf-fill text-danger me-1"></i> Download PDF
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Job Submission Feedback Alerts -->
+                <div id="modalJobSuccessAlert" class="alert alert-success border-0 small d-none rounded-3 mb-3">
+                    <i class="bi bi-check-circle-fill me-1"></i>
+                    <strong id="modalSuccessTitle">Job Started!</strong>
+                    <div id="modalSuccessMessage">Processing pipeline initiated in background.</div>
+                </div>
+
+                <div id="modalJobErrorAlert" class="alert alert-danger border-0 small d-none rounded-3 mb-3">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                    <strong id="modalErrorTitle">Pipeline Error</strong>
+                    <div id="modalErrorMessage">Error details.</div>
+                </div>
+
+                <div id="modalSubmissionExplainer" class="alert alert-info py-2 px-3 mb-0 small border-0 bg-info-subtle text-info-emphasis rounded-3">
+                    <i class="bi bi-play-circle-fill me-1"></i> <strong>Automated Execution:</strong><br>
+                    Clicking below creates the processing job and immediately begins transcript extraction, Google Gemini summarization, ReportLab PDF generation, and SMTP email delivery to all registered recipients.
+                </div>
+            </div>
+            <div class="modal-footer border-top-0 pt-0">
+                <button type="button" id="btnCloseModal" class="btn btn-secondary rounded-pill px-4" data-bs-dismiss="modal">Close</button>
+                <button type="button" id="btnConfirmSubmitJob" class="btn btn-primary rounded-pill px-4 fw-semibold d-flex align-items-center gap-2">
+                    <i class="bi bi-play-fill fs-5"></i>
+                    <span>Start Processing & Deliver Email</span>
+                </button>
+                <button type="button" id="btnReloadDashboard" class="btn btn-success rounded-pill px-4 fw-semibold d-none" onclick="window.location.reload()">
+                    <i class="bi bi-arrow-clockwise me-1"></i> Refresh Dashboard
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Email Pre-Flight & Send Confirmation Modal -->
+<div class="modal fade" id="emailPreFlightModal" tabindex="-1" aria-labelledby="emailPreFlightModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content rounded-4 border-0 shadow">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title fw-bold" id="emailPreFlightModalLabel">
+                    <i class="bi bi-send-check me-2"></i><span id="emailModalActionTitle">Send Summary PDF to Recipients</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <!-- Pre-flight verification summary -->
+                <div class="row g-3 mb-3">
+                    <div class="col-12 col-md-7">
+                        <div class="p-3 bg-light rounded-3 border h-100">
+                            <span class="text-muted small text-uppercase fw-bold">Target Webinar Session</span>
+                            <h6 id="preFlightJobTitle" class="fw-bold text-dark text-truncate mt-1 mb-1">Webinar Title</h6>
+                            <div class="small text-muted">
+                                Job ID: <strong id="preFlightJobId" class="font-monospace text-primary">#0</strong> &bull;
+                                Type: <span id="preFlightInputType" class="badge text-bg-light border">Video</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-12 col-md-5">
+                        <div class="p-3 bg-light rounded-3 border h-100">
+                            <span class="text-muted small text-uppercase fw-bold">Summary Brief Document</span>
+                            <div class="mt-1 d-flex align-items-center gap-2">
+                                <span id="preFlightPdfBadge" class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2.5 py-1">
+                                    <i class="bi bi-file-earmark-pdf-fill me-1"></i> PDF Ready on Server
+                                </span>
+                            </div>
+                            <div class="small text-muted mt-1">Multi-page ReportLab educational study brief</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recipient Stats Breakdown -->
+                <div class="card border mb-3">
+                    <div class="card-body p-3">
+                        <h6 class="fw-bold mb-2 small text-uppercase text-secondary">Recipient Delivery Scope</h6>
+                        <div class="row g-2 text-center">
+                            <div class="col">
+                                <div class="p-2 bg-light rounded border">
+                                    <div class="text-muted small" style="font-size: 0.7rem;">Total Recipients</div>
+                                    <div id="preFlightTotalCount" class="fw-bold fs-6 text-dark">0</div>
+                                </div>
+                            </div>
+                            <div class="col">
+                                <div class="p-2 bg-light rounded border border-primary">
+                                    <div class="text-primary small" style="font-size: 0.7rem;">Eligible to Send</div>
+                                    <div id="preFlightEligibleCount" class="fw-bold fs-6 text-primary">0</div>
+                                </div>
+                            </div>
+                            <div class="col">
+                                <div class="p-2 bg-light rounded border border-success">
+                                    <div class="text-success small" style="font-size: 0.7rem;">Already Sent</div>
+                                    <div id="preFlightSentCount" class="fw-bold fs-6 text-success">0</div>
+                                </div>
+                            </div>
+                            <div class="col">
+                                <div class="p-2 bg-light rounded border border-danger">
+                                    <div class="text-danger small" style="font-size: 0.7rem;">Previously Failed</div>
+                                    <div id="preFlightFailedCount" class="fw-bold fs-6 text-danger">0</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recipient Preview Sample Table -->
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span class="small fw-semibold text-secondary">Recipient Preview (First 10)</span>
+                        <span class="badge bg-secondary-subtle text-secondary small" id="preFlightPreviewNote">Showing up to 10</span>
+                    </div>
+                    <div class="table-responsive border rounded" style="max-height: 150px; scrollbar-width: thin;">
+                        <table class="table table-sm table-hover align-middle mb-0 small">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th>Recipient Email</th>
+                                    <th>Student Name</th>
+                                    <th style="width: 100px;">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="preFlightRecipientsTableBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- SMTP Server Status Alert -->
+                <div id="preFlightSmtpAlert" class="alert alert-warning border-0 small d-none rounded-3 mb-3">
+                    <div class="d-flex align-items-start gap-2">
+                        <i class="bi bi-exclamation-triangle-fill fs-5 mt-1"></i>
+                        <div>
+                            <strong id="preFlightSmtpTitle">SMTP Configuration Required</strong>
+                            <div id="preFlightSmtpMessage">Configure SMTP settings in .env to enable email delivery.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sending Feedback Alert -->
+                <div id="preFlightFeedbackAlert" class="alert alert-info border-0 small d-none rounded-3 mb-0">
+                    <div class="d-flex align-items-center gap-2">
+                        <span id="preFlightSpinner" class="spinner-border spinner-border-sm text-primary" role="status"></span>
+                        <div id="preFlightFeedbackMessage">Sending emails to student recipients...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer border-top-0 pt-0">
+                <button type="button" class="btn btn-secondary rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" id="btnConfirmSendEmails" class="btn btn-primary rounded-pill px-4 fw-semibold d-flex align-items-center gap-2">
+                    <i class="bi bi-send-fill"></i>
+                    <span id="btnConfirmSendText">Confirm & Send Emails</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Email Delivery Audit Report Modal -->
+<div class="modal fade" id="deliveryReportModal" tabindex="-1" aria-labelledby="deliveryReportModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content rounded-4 border-0 shadow">
+            <div class="modal-header bg-dark text-white">
+                <h5 class="modal-title fw-bold" id="deliveryReportModalLabel">
+                    <i class="bi bi-file-earmark-bar-graph me-2 text-info"></i>Email Delivery Report — Job <span id="reportJobId">#0</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <h6 id="reportJobTitle" class="fw-bold mb-0 text-dark">Webinar Title</h6>
+                        <span class="text-muted small">Completed: <span id="reportCompletedAt">--</span></span>
+                    </div>
+                    <span id="reportOverallBadge" class="badge bg-success-subtle text-success border border-success-subtle px-3 py-1.5 rounded-pill">
+                        Completed
+                    </span>
+                </div>
+
+                <!-- 4 Counter Badges -->
+                <div class="row g-2 text-center mb-3">
+                    <div class="col">
+                        <div class="p-2.5 bg-light rounded-3 border">
+                            <div class="text-muted small text-uppercase" style="font-size: 0.65rem;">Total Recipients</div>
+                            <div id="reportStatTotal" class="fw-bold fs-5 text-dark">0</div>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="p-2.5 bg-white rounded-3 border border-success">
+                            <div class="text-success small text-uppercase" style="font-size: 0.65rem;">Accepted by SMTP</div>
+                            <div id="reportStatAccepted" class="fw-bold fs-5 text-success">0</div>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="p-2.5 bg-white rounded-3 border border-danger">
+                            <div class="text-danger small text-uppercase" style="font-size: 0.65rem;">Failed Attempts</div>
+                            <div id="reportStatFailed" class="fw-bold fs-5 text-danger">0</div>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="p-2.5 bg-white rounded-3 border border-secondary">
+                            <div class="text-secondary small text-uppercase" style="font-size: 0.65rem;">Pending / Skipped</div>
+                            <div id="reportStatPending" class="fw-bold fs-5 text-secondary">0</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="fw-bold mb-0 text-secondary small text-uppercase">Recipient Delivery Audit Log</h6>
+                    <span class="badge bg-light text-secondary border small"><i class="bi bi-shield-lock me-1"></i>Individual Messages Only</span>
+                </div>
+
+                <!-- Audit Table -->
+                <div class="table-responsive border rounded-3 mb-0" style="max-height: 260px; scrollbar-width: thin;">
+                    <table class="table table-sm table-hover align-middle mb-0 small">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th>Recipient Email</th>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Attempts</th>
+                                <th>Timestamp</th>
+                                <th>Diagnostics</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reportRecipientsTableBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer border-top-0 pt-0 d-flex justify-content-between">
+                <div>
+                    <button type="button" id="btnReportRetryFailed" class="btn btn-warning rounded-pill px-3.5 fw-semibold d-none" onclick="triggerRetryFromReport()">
+                        <i class="bi bi-arrow-repeat me-1"></i> Retry Failed Recipients
+                    </button>
+                </div>
+                <button type="button" class="btn btn-secondary rounded-pill px-4" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.INITIAL_WEBINAR_STATE = {{ webinar_state|tojson|safe if webinar_state else 'null' }};
+    window.INITIAL_CSV_STATE = {{ csv_state|tojson|safe if csv_state else 'null' }};
+</script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

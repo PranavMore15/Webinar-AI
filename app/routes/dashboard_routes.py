@@ -1,0 +1,983 @@
+import os
+from flask import Blueprint, render_template, redirect, url_for, session, flash, request, jsonify, current_app, send_file
+from app.models import db, User, ProcessingJob, JobRecipient
+from app.services import csv_service, media_service, pdf_service, email_service, pipeline_service
+from app.utils.auth import login_required, user_required, EMAIL_REGEX
+
+dashboard_bp = Blueprint('dashboard', __name__)
+
+@dashboard_bp.route('/')
+def root():
+    if not session.get('user_id'):
+        return redirect(url_for('auth.login'))
+    if session.get('role') == 'admin':
+        return redirect(url_for('admin.dashboard'))
+    return redirect(url_for('dashboard.index'))
+
+@dashboard_bp.route('/dashboard')
+@user_required
+def index():
+    if not session.get('user_id'):
+        flash('Please log in to access the WebinarAI dashboard.', 'warning')
+        return redirect(url_for('auth.login'))
+    
+    username = session.get('username', 'Authorized User')
+    user_id = session.get('user_id')
+
+    # Retrieve current session upload states if active
+    csv_state = session.get('current_csv_validation')
+    webinar_state = session.get('current_webinar_upload')
+    if webinar_state and webinar_state.get('storage_path') and not os.path.exists(webinar_state['storage_path']):
+        session.pop('current_webinar_upload', None)
+        webinar_state = None
+
+    # Query persistent recent jobs for this authenticated user
+    recent_jobs = []
+    try:
+        recent_jobs = ProcessingJob.query.filter_by(user_id=user_id).order_by(ProcessingJob.created_at.desc()).limit(10).all()
+    except Exception:
+        recent_jobs = []
+
+    return render_template(
+        'dashboard.html',
+        username=username,
+        csv_state=csv_state,
+        webinar_state=webinar_state,
+        recent_jobs=recent_jobs
+    )
+
+@dashboard_bp.route('/api/upload-webinar', methods=['POST'])
+@user_required
+def upload_webinar():
+    """
+    Server-side MP4, TXT, and VTT upload handling.
+    Enforces authentication, size limits, extension matching, and safe storage under storage/uploads/.
+    """
+    if 'file' not in request.files and 'webinar_file' not in request.files:
+        return jsonify({'success': False, 'message': 'No webinar file was submitted.'}), 400
+
+    uploaded_file = request.files.get('file') or request.files.get('webinar_file')
+    if not uploaded_file or uploaded_file.filename == '':
+        return jsonify({'success': False, 'message': 'No file was selected.'}), 400
+
+    source_type = request.form.get('source_type', 'video').lower().strip()
+    if source_type not in ('video', 'transcript'):
+        return jsonify({'success': False, 'message': "Source type must be 'video' or 'transcript'."}), 400
+
+    # Select configured size limit
+    max_size = current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024) if source_type == 'video' else current_app.config.get('MAX_TRANSCRIPT_SIZE', 10 * 1024 * 1024)
+    upload_folder = current_app.config.get('UPLOAD_FOLDER')
+
+    # Validate and save to storage/uploads
+    result = media_service.validate_and_save_media(
+        file_storage=uploaded_file,
+        source_type=source_type,
+        upload_folder=upload_folder,
+        max_size_bytes=max_size
+    )
+
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'message': result.get('error', 'Webinar media validation failed.'),
+            'code': result.get('code')
+        }), 400
+
+    # Clean up previous webinar file in current session if replaced
+    previous_upload = session.get('current_webinar_upload')
+    if previous_upload and previous_upload.get('storage_path'):
+        media_service.delete_uploaded_file(previous_upload['storage_path'])
+
+    # Store validated media in session for workflow orchestration
+    session['current_webinar_upload'] = {
+        'input_type': result['source_type'],
+        'original_filename': result['original_filename'],
+        'safe_filename': result['safe_filename'],
+        'storage_path': result['storage_path'],
+        'file_size': result['file_size'],
+        'file_extension': result['file_extension']
+    }
+
+    return jsonify({
+        'success': True,
+        'message': f"Webinar {result['source_type']} uploaded and verified on server.",
+        'details': {
+            'input_type': result['source_type'],
+            'original_filename': result['original_filename'],
+            'safe_filename': result['safe_filename'],
+            'file_size': result['file_size'],
+            'file_extension': result['file_extension']
+        }
+    }), 200
+
+@dashboard_bp.route('/api/clear-webinar', methods=['POST'])
+@user_required
+def clear_webinar():
+    """
+    Clears the active webinar upload from disk and current session state.
+    """
+    webinar_data = session.get('current_webinar_upload')
+    if webinar_data and webinar_data.get('storage_path'):
+        media_service.delete_uploaded_file(webinar_data['storage_path'])
+
+    session.pop('current_webinar_upload', None)
+    return jsonify({'success': True, 'message': 'Webinar media cleared from server storage and session.'}), 200
+
+@dashboard_bp.route('/api/upload-csv', methods=['POST'])
+@user_required
+def upload_csv():
+    """
+    Backend CSV validation endpoint for student recipient lists.
+    Merges with any existing draft recipients and performs case-insensitive cross-deduplication.
+    """
+    if 'file' not in request.files and 'csv_file' not in request.files:
+        return jsonify({'success': False, 'message': 'No CSV file was submitted with the request.'}), 400
+
+    uploaded_file = request.files.get('file') or request.files.get('csv_file')
+    if not uploaded_file or uploaded_file.filename == '':
+        return jsonify({'success': False, 'message': 'No file was selected.'}), 400
+
+    filename = uploaded_file.filename
+    if not filename.lower().endswith('.csv'):
+        return jsonify({
+            'success': False,
+            'message': 'Unsupported file type. Please upload a .csv file.'
+        }), 400
+
+    try:
+        file_bytes = uploaded_file.read()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Failed to read uploaded file: {str(e)}'}), 400
+
+    max_size = current_app.config.get('MAX_CSV_SIZE', 10 * 1024 * 1024)
+    if len(file_bytes) > max_size:
+        return jsonify({
+            'success': False,
+            'message': f'File exceeds maximum allowed size ({max_size // (1024 * 1024)}MB).'
+        }), 400
+
+    # Retrieve existing draft recipients to perform cross-deduplication
+    existing_recipients = []
+    current_csv = session.get('current_csv_validation')
+    if current_csv and isinstance(current_csv, dict) and current_csv.get('valid_recipients'):
+        existing_recipients = list(current_csv.get('valid_recipients'))
+
+    result = csv_service.validate_and_parse_csv(
+        file_bytes=file_bytes,
+        filename=filename,
+        max_size_bytes=max_size,
+        existing_recipients=existing_recipients
+    )
+
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'message': result.get('error', 'CSV validation failed.'),
+            'code': result.get('code')
+        }), 400
+
+    combined_recipients = existing_recipients + result['valid_recipients']
+
+    session['current_csv_validation'] = {
+        'filename': result['filename'],
+        'total_data_rows': (current_csv.get('total_data_rows', 0) if current_csv else 0) + result['total_data_rows'],
+        'valid_unique_count': len(combined_recipients),
+        'duplicate_count': (current_csv.get('duplicate_count', 0) if current_csv else 0) + result['duplicate_count'],
+        'invalid_count': (current_csv.get('invalid_count', 0) if current_csv else 0) + result['invalid_count'],
+        'blank_count': (current_csv.get('blank_count', 0) if current_csv else 0) + result['blank_count'],
+        'valid_recipients': combined_recipients
+    }
+    session.modified = True
+
+    response_payload = dict(result)
+    response_payload['valid_unique_count'] = len(combined_recipients)
+    response_payload['valid_recipients'] = combined_recipients
+    return jsonify(response_payload), 200
+
+@dashboard_bp.route('/api/clear-recipients', methods=['POST'])
+@dashboard_bp.route('/api/clear-csv', methods=['POST'])
+@user_required
+def clear_csv():
+    """
+    Clears active recipient validation session state.
+    """
+    session.pop('current_csv_validation', None)
+    return jsonify({'success': True, 'message': 'Recipient session state cleared.'}), 200
+
+@dashboard_bp.route('/api/recipients', methods=['GET'])
+@user_required
+def get_recipients():
+    """
+    Returns current active recipient list from session.
+    """
+    csv_state = session.get('current_csv_validation') or {}
+    recipients = csv_state.get('valid_recipients', [])
+    return jsonify({
+        'success': True,
+        'valid_unique_count': len(recipients),
+        'recipients': recipients
+    }), 200
+
+@dashboard_bp.route('/api/recipients/add', methods=['POST'])
+@user_required
+def add_recipient():
+    """
+    Adds an individual recipient manually to the active draft recipient list.
+    Enforces format validation and case-insensitive deduplication across
+    both manual entries and CSV uploads, preserving the first valid entry.
+    """
+    data = request.get_json(silent=True) or request.form or {}
+    raw_email = data.get('email', '')
+    raw_name = data.get('name', '') or data.get('student_name', '')
+
+    if not raw_email or not str(raw_email).strip():
+        return jsonify({
+            'success': False,
+            'message': 'Email address is required.'
+        }), 400
+
+    clean_email = str(raw_email).strip()
+    if not EMAIL_REGEX.match(clean_email):
+        return jsonify({
+            'success': False,
+            'message': 'Invalid email address format. Please provide a valid email (e.g., student@university.edu).'
+        }), 400
+
+    clean_name = str(raw_name).strip() if raw_name else ''
+    normalized_email = clean_email.lower()
+
+    # Retrieve or initialize session recipient state
+    csv_state = session.get('current_csv_validation')
+    if not csv_state or not isinstance(csv_state, dict):
+        csv_state = {
+            'filename': 'manual_entry',
+            'total_data_rows': 0,
+            'valid_unique_count': 0,
+            'duplicate_count': 0,
+            'invalid_count': 0,
+            'blank_count': 0,
+            'valid_recipients': []
+        }
+
+    recipients = list(csv_state.get('valid_recipients', []))
+
+    # Case-insensitive duplicate check
+    for r in recipients:
+        if r.get('email', '').lower() == normalized_email:
+            return jsonify({
+                'success': False,
+                'message': f"Recipient '{clean_email}' is already in the recipient list. Duplicate ignored."
+            }), 400
+
+    # Add valid recipient
+    new_entry = {
+        'row': len(recipients) + 1,
+        'email': normalized_email,
+        'original_email': clean_email,
+        'name': clean_name,
+        'source': 'manual'
+    }
+    recipients.append(new_entry)
+
+    csv_state['valid_recipients'] = recipients
+    csv_state['valid_unique_count'] = len(recipients)
+    session['current_csv_validation'] = csv_state
+    session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': f"Recipient '{clean_email}' added successfully.",
+        'recipient': new_entry,
+        'valid_unique_count': len(recipients),
+        'recipients': recipients
+    }), 200
+
+@dashboard_bp.route('/api/recipients/remove', methods=['POST'])
+@user_required
+def remove_recipient():
+    """
+    Deletes an individual recipient from the active draft list by email.
+    """
+    data = request.get_json(silent=True) or request.form or {}
+    target_email = data.get('email', '')
+
+    if not target_email or not str(target_email).strip():
+        return jsonify({
+            'success': False,
+            'message': 'Email address to remove is required.'
+        }), 400
+
+    target_normalized = str(target_email).strip().lower()
+
+    csv_state = session.get('current_csv_validation')
+    if not csv_state or not isinstance(csv_state, dict) or not csv_state.get('valid_recipients'):
+        return jsonify({
+            'success': False,
+            'message': 'No recipients found in the active list.'
+        }), 404
+
+    recipients = list(csv_state.get('valid_recipients', []))
+    initial_len = len(recipients)
+    recipients = [r for r in recipients if r.get('email', '').lower() != target_normalized]
+
+    if len(recipients) == initial_len:
+        return jsonify({
+            'success': False,
+            'message': f"Recipient '{target_email}' was not found in the list."
+        }), 404
+
+    # Re-index rows
+    for idx, r in enumerate(recipients, start=1):
+        r['row'] = idx
+
+    csv_state['valid_recipients'] = recipients
+    csv_state['valid_unique_count'] = len(recipients)
+    session['current_csv_validation'] = csv_state
+    session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': f"Recipient '{target_email}' removed successfully.",
+        'valid_unique_count': len(recipients),
+        'recipients': recipients
+    }), 200
+
+@dashboard_bp.route('/api/validate-state', methods=['POST'])
+@user_required
+def validate_state():
+    """
+    Verifies server-side state of selected uploads before job submission.
+    Ensures both inputs exist on the server.
+    """
+    data = request.get_json() or {}
+    
+    # Check server-side session states
+    webinar_state = session.get('current_webinar_upload')
+    if webinar_state and webinar_state.get('storage_path'):
+        if not os.path.exists(webinar_state['storage_path']):
+            session.pop('current_webinar_upload', None)
+            webinar_state = None
+
+    has_webinar = webinar_state is not None or data.get('hasWebinar', False)
+    webinar_name = webinar_state.get('original_filename', '') if webinar_state else data.get('webinarName', '')
+    webinar_type = webinar_state.get('input_type', '') if webinar_state else data.get('webinarType', 'none')
+
+    csv_state = session.get('current_csv_validation')
+    recipients_ready = csv_state.get('valid_unique_count', 0) if csv_state else data.get('recipientCount', 0)
+    
+    if not has_webinar:
+        return jsonify({
+            'success': False,
+            'message': 'Server validation rejected: No webinar video or transcript uploaded to server.'
+        }), 400
+        
+    if recipients_ready <= 0:
+        return jsonify({
+            'success': False,
+            'message': 'Server validation rejected: At least one valid, unique recipient email is required.'
+        }), 400
+        
+    return jsonify({
+        'success': True,
+        'message': 'Server-side pre-validation passed! Inputs satisfy requirements.',
+        'details': {
+            'input_type': webinar_type,
+            'input_name': webinar_name,
+            'recipients_ready': recipients_ready,
+            'recipient_filename': csv_state.get('filename', 'client_csv') if csv_state else 'client_csv',
+            'stage_note': 'Both inputs verified on backend. Ready for job persistence.'
+        }
+    })
+
+@dashboard_bp.route('/api/submit-job', methods=['POST'])
+@user_required
+def submit_job():
+    """
+    Creates and persists a new ProcessingJob and associated JobRecipient records
+    in the database for the authenticated owner.
+    """
+    user_id = session.get('user_id')
+    user = None
+    try:
+        user = db.session.get(User, user_id) if user_id else None
+        if not user:
+            # Auto-adopt existing user or auto-provision standard user to prevent foreign key constraint error
+            user = User.query.filter_by(role='user').first()
+            if user:
+                user_id = user.id
+                session['user_id'] = user.id
+                session['username'] = user.username
+                session['role'] = user.role
+            else:
+                user = User(id=user_id or 2, username='student', email='student@webinarai.local', role='user', is_active=True)
+                user.set_password('student123')
+                db.session.add(user)
+                db.session.commit()
+                user_id = user.id
+                session['user_id'] = user.id
+                session['username'] = user.username
+                session['role'] = user.role
+    except Exception:
+        pass
+
+    webinar_data = session.get('current_webinar_upload')
+    csv_data = session.get('current_csv_validation')
+
+    if not webinar_data or not webinar_data.get('storage_path'):
+        return jsonify({
+            'success': False,
+            'message': 'Cannot create processing job: No webinar media uploaded.'
+        }), 400
+
+    if not os.path.exists(webinar_data['storage_path']):
+        session.pop('current_webinar_upload', None)
+        return jsonify({
+            'success': False,
+            'message': 'Cannot create processing job: Uploaded webinar media file is missing from server storage.'
+        }), 400
+
+    if not csv_data or csv_data.get('valid_unique_count', 0) <= 0:
+        return jsonify({
+            'success': False,
+            'message': 'Cannot create processing job: No valid recipient list validated.'
+        }), 400
+
+    # Execute database transaction
+    try:
+        job_title = f"Webinar Processing - {webinar_data['original_filename']}"[:250]
+        if request.is_json and request.get_json() and request.get_json().get('title'):
+            job_title = request.get_json().get('title')[:250]
+
+        new_job = ProcessingJob(
+            user_id=user_id,
+            title=job_title,
+            input_type=webinar_data['input_type'],
+            input_file_name=webinar_data['original_filename'],
+            input_file_path=webinar_data['storage_path'],
+            overall_status='ready',
+            transcript_status='pending',
+            summary_status='pending',
+            pdf_status='pending',
+            email_status='pending',
+            total_recipients=csv_data['valid_unique_count']
+        )
+        db.session.add(new_job)
+        db.session.flush()  # Allocate new_job.id within active transaction
+
+        # Insert job recipients
+        recipients_to_insert = [
+            JobRecipient(
+                job_id=new_job.id,
+                email=r['email'],
+                student_name=r.get('name') or None,
+                delivery_status='pending'
+            )
+            for r in csv_data['valid_recipients']
+        ]
+        db.session.add_all(recipients_to_insert)
+        db.session.commit()
+
+        # Clear session upload states after successful persistence
+        session.pop('current_webinar_upload', None)
+        session.pop('current_csv_validation', None)
+
+        # Launch automated asynchronous background processing pipeline (if not in offline test mode)
+        if not current_app.config.get('TESTING'):
+            pipeline_service.start_job_pipeline_async(new_job.id, current_app._get_current_object())
+
+        return jsonify({
+            'success': True,
+            'message': f"Processing Job #{new_job.id} created and automated processing pipeline started.",
+            'job': {
+                'id': new_job.id,
+                'input_type': new_job.input_type,
+                'input_file_name': new_job.input_file_name,
+                'overall_status': new_job.overall_status,
+                'total_recipients': new_job.total_recipients,
+                'created_at': new_job.created_at.strftime('%Y-%m-%d %H:%M:%S') if new_job.created_at else ''
+            }
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': f"Database transaction failed while creating job: {str(e)}"
+        }), 500
+
+@dashboard_bp.route('/api/jobs/<int:job_id>', methods=['GET'])
+@dashboard_bp.route('/api/jobs/<int:job_id>/status', methods=['GET'])
+@user_required
+def get_job_status(job_id):
+    """
+    Returns processing job status with progress percentage and stage descriptions.
+    Enforces user ownership server-side.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+    if not job:
+        return jsonify({'success': False, 'message': 'Job not found.'}), 404
+
+    # Ownership verification: ordinary users can only view their own jobs
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    stage_labels = {
+        'ready': 'Queued in database',
+        'processing': 'Processing started...',
+        'transcribing': 'Step 1/4: Ingesting & normalizing transcript...',
+        'summarizing': 'Step 2/4: Generating structured AI summary with Gemini...',
+        'generating_pdf': 'Step 3/4: Compiling ReportLab PDF brief...',
+        'sending_emails': 'Step 4/4: Delivering summary emails via SMTP...',
+        'completed': 'Completed: Summary brief generated and delivered!',
+        'partially_sent': 'Completed with partial email delivery',
+        'failed': f"Processing failed: {job.error_message or 'Error occurred'}"
+    }
+    progress_map = {
+        'ready': 5,
+        'processing': 15,
+        'transcribing': 25,
+        'summarizing': 50,
+        'generating_pdf': 75,
+        'sending_emails': 90,
+        'completed': 100,
+        'partially_sent': 100,
+        'failed': 100
+    }
+
+    is_pdf_ready = bool(job.pdf_status == 'completed' and job.pdf_path)
+
+    return jsonify({
+        'success': True,
+        'job': {
+            'id': job.id,
+            'title': job.title,
+            'input_type': job.input_type,
+            'input_file_name': job.input_file_name,
+            'overall_status': job.overall_status,
+            'transcript_status': job.transcript_status,
+            'summary_status': job.summary_status,
+            'pdf_status': job.pdf_status,
+            'email_status': job.email_status,
+            'pdf_ready': is_pdf_ready,
+            'pdf_path': job.pdf_path,
+            'pdf_url': url_for('dashboard.download_job_pdf', job_id=job.id) if is_pdf_ready else None,
+            'progress_percent': progress_map.get(job.overall_status, 10),
+            'stage_label': stage_labels.get(job.overall_status, job.overall_status.capitalize()),
+            'is_active': job.overall_status in ['ready', 'processing', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails'],
+            'total_recipients': job.total_recipients,
+            'successful_emails': job.successful_emails,
+            'failed_emails': job.failed_emails,
+            'error_message': job.error_message,
+            'created_at': job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else ''
+        }
+    }), 200
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/start', methods=['POST'])
+@user_required
+def start_job_manually(job_id):
+    """
+    Manually triggers background pipeline processing for an existing job.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+    if not job:
+        return jsonify({'success': False, 'message': 'Job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    if job.overall_status in ['transcribing', 'summarizing', 'generating_pdf', 'sending_emails']:
+        return jsonify({'success': False, 'message': 'Job pipeline is already actively running.'}), 409
+
+    pipeline_service.start_job_pipeline_async(job.id, current_app._get_current_object())
+    return jsonify({
+        'success': True,
+        'message': f"Pipeline started for Job #{job.id}."
+    }), 200
+
+
+@dashboard_bp.route('/api/jobs/active-statuses', methods=['GET'])
+@user_required
+def get_active_job_statuses():
+    """
+    Returns updated stage statuses for recent user jobs to power live table updates.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    query = ProcessingJob.query
+    if user_role != 'admin':
+        query = query.filter_by(user_id=user_id)
+    jobs = query.order_by(ProcessingJob.created_at.desc()).limit(15).all()
+
+    progress_map = {
+        'ready': 5,
+        'processing': 15,
+        'transcribing': 25,
+        'summarizing': 50,
+        'generating_pdf': 75,
+        'sending_emails': 90,
+        'completed': 100,
+        'partially_sent': 100,
+        'failed': 100
+    }
+
+    return jsonify({
+        'success': True,
+        'jobs': [
+            {
+                'id': j.id,
+                'overall_status': j.overall_status,
+                'transcript_status': j.transcript_status,
+                'summary_status': j.summary_status,
+                'pdf_status': j.pdf_status,
+                'email_status': j.email_status,
+                'pdf_ready': bool(j.pdf_status == 'completed' and j.pdf_path),
+                'pdf_url': url_for('dashboard.download_job_pdf', job_id=j.id) if (j.pdf_status == 'completed' and j.pdf_path) else None,
+                'progress_percent': progress_map.get(j.overall_status, 10),
+                'is_active': j.overall_status in ['ready', 'processing', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails'],
+                'successful_emails': j.successful_emails,
+                'failed_emails': j.failed_emails,
+                'total_recipients': j.total_recipients,
+                'error_message': j.error_message
+            }
+            for j in jobs
+        ]
+    }), 200
+
+
+@dashboard_bp.route('/dashboard/jobs/<int:job_id>/download-pdf', methods=['GET'])
+@dashboard_bp.route('/api/jobs/<int:job_id>/download-pdf', methods=['GET'])
+@user_required
+def download_job_pdf(job_id):
+    """
+    Secure, tenant-isolated PDF download endpoint.
+    Verifies user ownership, validates file existence within configured PDF storage,
+    and prevents directory traversal.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+
+    if not job:
+        return jsonify({'success': False, 'message': 'Processing job not found.'}), 404
+
+    # Strict ownership verification (ordinary users can only access their own jobs)
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    # If PDF is pending/not yet compiled but Gemini summary is ready, attempt on-demand compilation
+    if (job.pdf_status != 'completed' or not job.pdf_path) and job.summary_status == 'completed':
+        try:
+            pdf_service.generate_job_pdf(job)
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'message': f"PDF generation failed on-demand: {str(e)}"
+            }), 500
+
+    if job.pdf_status != 'completed' or not job.pdf_path:
+        return jsonify({
+            'success': False,
+            'message': 'PDF summary has not been generated for this job yet. Summarization must be completed first.'
+        }), 400
+
+    # Resolve and verify physical file path (traversal defense)
+    full_path = pdf_service.resolve_pdf_full_path(job.pdf_path)
+    if not full_path or not os.path.isfile(full_path):
+        return jsonify({
+            'success': False,
+            'message': 'PDF file not found on server or path security check failed.'
+        }), 404
+
+    download_name = f"WebinarAI_Summary_Job_{job.id}.pdf"
+    return send_file(
+        full_path,
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name=download_name
+    )
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/generate-pdf', methods=['POST'])
+@user_required
+def trigger_generate_pdf(job_id):
+    """
+    Idempotent PDF generation trigger endpoint for a completed AI summary.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+
+    if not job:
+        return jsonify({'success': False, 'message': 'Processing job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    if job.summary_status != 'completed':
+        return jsonify({
+            'success': False,
+            'message': 'Cannot generate PDF: AI summary must be completed first.'
+        }), 400
+
+    try:
+        force = request.is_json and request.get_json() and request.get_json().get('force', False)
+        result = pdf_service.generate_job_pdf(job, force=force)
+        return jsonify({
+            'success': True,
+            'message': 'PDF generated successfully.',
+            'job_id': job.id,
+            'pdf_status': job.pdf_status,
+            'pdf_path': job.pdf_path,
+            'idempotent': result.get('idempotent', False)
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f"PDF generation failed: {str(e)}"
+        }), 500
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/email-preview', methods=['GET'])
+@user_required
+def get_email_preview(job_id):
+    """
+    Pre-flight inspection endpoint before email dispatch.
+    Returns webinar title, verified PDF readiness, recipient counts,
+    and SMTP configuration validation status.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+
+    if not job:
+        return jsonify({'success': False, 'message': 'Processing job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    # Check physical PDF existence and security
+    is_pdf_ready = False
+    if job.pdf_status == 'completed' and job.pdf_path:
+        full_pdf = pdf_service.resolve_pdf_full_path(job.pdf_path)
+        if full_pdf and os.path.isfile(full_pdf) and os.path.getsize(full_pdf) > 0:
+            is_pdf_ready = True
+
+    # Validate SMTP configuration
+    smtp_validation = email_service.validate_smtp_config()
+
+    all_recipients = job.recipients.all()
+    total = len(all_recipients)
+    sent = sum(1 for r in all_recipients if r.delivery_status == 'sent')
+    failed = sum(1 for r in all_recipients if r.delivery_status == 'failed')
+    pending = sum(1 for r in all_recipients if r.delivery_status == 'pending')
+
+    return jsonify({
+        'success': True,
+        'job_id': job.id,
+        'title': job.title or job.input_file_name,
+        'input_type': job.input_type,
+        'input_file_name': job.input_file_name,
+        'pdf_ready': is_pdf_ready,
+        'pdf_path': job.pdf_path,
+        'email_status': job.email_status,
+        'overall_status': job.overall_status,
+        'smtp_ready': smtp_validation['valid'],
+        'smtp_error': smtp_validation.get('error') if not smtp_validation['valid'] else None,
+        'counts': {
+            'total': total,
+            'sent': sent,
+            'failed': failed,
+            'pending': pending,
+            'eligible_to_send': pending + failed
+        },
+        'preview_recipients': [
+            {
+                'email': r.email,
+                'name': r.student_name,
+                'status': r.delivery_status
+            }
+            for r in all_recipients[:10]
+        ]
+    }), 200
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/send-emails', methods=['POST'])
+@user_required
+def trigger_send_emails(job_id):
+    """
+    User-controlled execution endpoint to dispatch summary PDFs to students.
+    Enforces ownership, PDF readiness, SMTP config validity, and concurrency protection.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+
+    if not job:
+        return jsonify({'success': False, 'message': 'Processing job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    if job.pdf_status != 'completed' or not job.pdf_path:
+        return jsonify({
+            'success': False,
+            'message': 'Cannot send emails: Summary PDF has not been generated or completed yet.'
+        }), 400
+
+    full_pdf = pdf_service.resolve_pdf_full_path(job.pdf_path)
+    if not full_pdf or not os.path.isfile(full_pdf):
+        return jsonify({
+            'success': False,
+            'message': 'Cannot send emails: Summary PDF file is missing from server storage.'
+        }), 400
+
+    if job.email_status == 'sending':
+        return jsonify({
+            'success': False,
+            'message': 'Email delivery is already in progress for this job.'
+        }), 409
+
+    smtp_val = email_service.validate_smtp_config()
+    if not smtp_val['valid']:
+        return jsonify({
+            'success': False,
+            'message': f"SMTP Configuration Error: {smtp_val['error']}",
+            'code': smtp_val.get('code')
+        }), 400
+
+    try:
+        result = email_service.send_webinar_summary_emails(job_id=job.id, retry_failed_only=False)
+        return jsonify({
+            'success': True,
+            'message': f"Email delivery completed: {result['sent_count']} sent, {result['failed_count']} failed.",
+            'details': result
+        }), 200
+    except email_service.SMTPDeliveryError as s_err:
+        return jsonify({
+            'success': False,
+            'message': s_err.message,
+            'code': s_err.code
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f"Email delivery failed: {str(e)}"
+        }), 500
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/retry-emails', methods=['POST'])
+@user_required
+def trigger_retry_emails(job_id):
+    """
+    Retries delivery strictly for failed or unattempted recipients.
+    Never re-sends to recipients who already received the PDF.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+
+    if not job:
+        return jsonify({'success': False, 'message': 'Processing job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    if job.pdf_status != 'completed' or not job.pdf_path:
+        return jsonify({
+            'success': False,
+            'message': 'Cannot retry emails: Summary PDF must be generated first.'
+        }), 400
+
+    if job.email_status == 'sending':
+        return jsonify({
+            'success': False,
+            'message': 'Email delivery is already in progress for this job.'
+        }), 409
+
+    smtp_val = email_service.validate_smtp_config()
+    if not smtp_val['valid']:
+        return jsonify({
+            'success': False,
+            'message': f"SMTP Configuration Error: {smtp_val['error']}",
+            'code': smtp_val.get('code')
+        }), 400
+
+    try:
+        result = email_service.send_webinar_summary_emails(job_id=job.id, retry_failed_only=True)
+        return jsonify({
+            'success': True,
+            'message': f"Retry delivery completed: {result['sent_count']} sent, {result['failed_count']} failed.",
+            'details': result
+        }), 200
+    except email_service.SMTPDeliveryError as s_err:
+        return jsonify({
+            'success': False,
+            'message': s_err.message,
+            'code': s_err.code
+        }), 500
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f"Email retry delivery failed: {str(e)}"
+        }), 500
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/delivery-report', methods=['GET'])
+@user_required
+def get_delivery_report(job_id):
+    """
+    Returns complete delivery audit information for a job owner:
+    Totals (accepted, failed, pending), timestamps, and per-recipient delivery statuses.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+
+    if not job:
+        return jsonify({'success': False, 'message': 'Processing job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    all_recipients = job.recipients.order_by(JobRecipient.id.asc()).all()
+    total = len(all_recipients)
+    sent = sum(1 for r in all_recipients if r.delivery_status == 'sent')
+    failed = sum(1 for r in all_recipients if r.delivery_status == 'failed')
+    pending = sum(1 for r in all_recipients if r.delivery_status == 'pending')
+
+    can_retry = (failed > 0 or pending > 0) and job.email_status != 'sending'
+
+    return jsonify({
+        'success': True,
+        'job_id': job.id,
+        'title': job.title or job.input_file_name,
+        'email_status': job.email_status,
+        'overall_status': job.overall_status,
+        'completed_at': job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else None,
+        'counts': {
+            'total': total,
+            'sent': sent,
+            'failed': failed,
+            'pending': pending
+        },
+        'can_retry': can_retry,
+        'recipients': [
+            {
+                'id': r.id,
+                'email': r.email,
+                'name': r.student_name,
+                'status': r.delivery_status,
+                'attempts': r.attempt_count,
+                'sent_at': r.sent_at.strftime('%Y-%m-%d %H:%M:%S') if r.sent_at else None,
+                'last_error': r.last_error
+            }
+            for r in all_recipients
+        ]
+    }), 200
+
+

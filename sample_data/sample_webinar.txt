@@ -1,0 +1,14 @@
+Webinar Title: Introduction to Large Language Models in Engineering
+Speaker: Prof. Alan Turing
+
+1. Overview:
+Today's session focuses on how modern LLMs use self-attention mechanisms to process tokens in parallel.
+We examined transformer encoder-decoder blocks and the impact of context window sizes.
+
+2. Key Engineering Concepts:
+- Attention heads compute relevance scores across input sequence embeddings.
+- Quantization reduces floating-point precision to allow running models on resource-constrained edge hardware.
+- Prompt engineering and few-shot conditioning can steer generation without fine-tuning weights.
+
+3. Conclusion:
+Please refer to the generated PDF summary for detailed mathematical equations and reading references.
