@@ -1,4 +1,6 @@
 import os
+import re
+import urllib.parse
 from flask import Blueprint, render_template, redirect, url_for, session, flash, request, jsonify, current_app, send_file
 from app.models import db, User, ProcessingJob, JobRecipient
 from app.services import csv_service, media_service, pdf_service, email_service, pipeline_service
@@ -122,6 +124,478 @@ def clear_webinar():
 
     session.pop('current_webinar_upload', None)
     return jsonify({'success': True, 'message': 'Webinar media cleared from server storage and session.'}), 200
+
+YOUTUBE_URL_REGEX = re.compile(
+    r'^(https?://)?(www\.)?(youtube\.com/watch\?.*v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
+    re.IGNORECASE
+)
+GDRIVE_URL_REGEX = re.compile(
+    r'^(https?://)?(drive\.google\.com/(?:file/d/|open\?id=)|docs\.google\.com/file/d/)([a-zA-Z0-9_-]+)',
+    re.IGNORECASE
+)
+
+@dashboard_bp.route('/api/sources/check-accessibility', methods=['POST'])
+@user_required
+def check_source_accessibility():
+    """
+    Non-destructive pre-flight accessibility check for remote and local sources.
+    Validates URL syntax, provider formatting, detects candidate MIME types,
+    and returns accessibility status, eligibility, and instructions without
+    initiating a full download or processing job.
+    """
+    import urllib.parse
+    data = request.get_json(silent=True) or request.form or {}
+    source_type = data.get('source_type', '').strip().lower()
+    source_url = data.get('source_url', '').strip()
+    filename = data.get('filename', '').strip()
+
+    if not source_type:
+        return jsonify({
+            'success': False,
+            'status': 'error',
+            'accessibility_status': 'Source Not Selected',
+            'message': 'Source type is required.'
+        }), 400
+
+    if source_type == 'direct':
+        if not source_url:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'accessibility_status': 'Invalid URL',
+                'message': 'Invalid link. Please enter a valid video or audio link.'
+            }), 400
+
+        from app.providers.direct_provider import DirectMediaProvider
+        provider = DirectMediaProvider()
+        result = provider.check_accessibility(source_url)
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+
+    elif source_type == 'youtube':
+        if not source_url:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'accessibility_status': 'Invalid URL',
+                'message': 'Please provide a YouTube video URL.'
+            }), 400
+
+        caption_content = data.get('caption_content')
+        if not caption_content and request.files:
+            caption_file = request.files.get('caption_file') or request.files.get('file')
+            if caption_file:
+                caption_content = caption_file.read().decode('utf-8', errors='ignore')
+
+        from app.providers.youtube_provider import YouTubeProvider
+        provider = YouTubeProvider()
+        api_key = current_app.config.get('YOUTUBE_API_KEY')
+        result = provider.check_accessibility(
+            source_reference=source_url,
+            api_key=api_key,
+            caption_content=caption_content
+        )
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+
+    elif source_type == 'gdrive':
+        if not source_url:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'accessibility_status': 'Invalid URL',
+                'message': 'Please provide a Google Drive file link.'
+            }), 400
+
+        from app.providers.gdrive_provider import GDriveMediaProvider
+        provider = GDriveMediaProvider()
+        result = provider.check_accessibility(
+            source_reference=source_url,
+            session_token=session.get('gdrive_token'),
+            max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+        )
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+
+    elif source_type in ('local_file', 'local_folder'):
+        from app.providers.local_provider import LocalMediaProvider
+        provider = LocalMediaProvider()
+        result = provider.check_accessibility(
+            source_reference=filename or source_url or 'selected_recording',
+            filename=filename,
+            file_size=data.get('file_size'),
+            file_size_formatted=data.get('file_size') if isinstance(data.get('file_size'), str) else None,
+            source_type=source_type,
+            max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+        )
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+
+    else:
+        return jsonify({
+            'success': False,
+            'status': 'error',
+            'accessibility_status': 'Unsupported Source',
+            'message': f"Source type '{source_type}' is not supported by WebinarAI."
+        }), 400
+
+@dashboard_bp.route('/api/sources/direct/check', methods=['POST'])
+@user_required
+def check_direct_media():
+    """
+    Validates a direct media URL using DirectMediaProvider and SSRF protections.
+    """
+    from app.providers.direct_provider import DirectMediaProvider
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '').strip()
+
+    if not url:
+        return jsonify({
+            'success': False,
+            'accessibility_status': 'Invalid URL',
+            'message': 'Direct media URL is required.'
+        }), 400
+
+    provider = DirectMediaProvider()
+    result = provider.check_accessibility(url)
+    status_code = 200 if result.get('success') else 400
+    return jsonify(result), status_code
+
+
+@dashboard_bp.route('/api/sources/direct/retrieve', methods=['POST'])
+@user_required
+def retrieve_direct_media():
+    """
+    Streams and verifies a direct media file from a validated URL.
+    Saves to upload folder and populates session['current_webinar_upload']
+    for seamless integration with job creation.
+    """
+    from app.providers.direct_provider import DirectMediaProvider
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '').strip()
+
+    if not url:
+        return jsonify({
+            'success': False,
+            'message': 'Direct media URL is required for retrieval.'
+        }), 400
+
+    provider = DirectMediaProvider()
+    upload_folder = current_app.config.get('UPLOAD_FOLDER')
+    max_size = current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+
+    result = provider.retrieve_media(
+        source_reference=url,
+        destination_dir=upload_folder,
+        max_size_bytes=max_size
+    )
+
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'message': result.get('error', 'Direct media retrieval failed.'),
+            'code': result.get('code')
+        }), 400
+
+    # Clean up any previously active webinar upload in current session
+    previous_upload = session.get('current_webinar_upload')
+    if previous_upload and previous_upload.get('storage_path'):
+        media_service.delete_uploaded_file(previous_upload['storage_path'])
+
+    # Stage retrieved file in session
+    session['current_webinar_upload'] = {
+        'source_type': 'direct',
+        'input_type': result['input_type'],
+        'original_filename': result['original_filename'],
+        'safe_filename': result['safe_filename'],
+        'storage_path': result['storage_path'],
+        'file_size': result['file_size'],
+        'file_extension': result['file_extension'],
+        'source_url': url
+    }
+    session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': f"Direct {result['input_type']} retrieved and verified from remote source.",
+        'details': session['current_webinar_upload']
+    }), 200
+
+@dashboard_bp.route('/api/sources/local/upload', methods=['POST'])
+@user_required
+def upload_local_source():
+    """
+    Handles uploaded local media file (from Local File picker or Local Folder discovery).
+    Validates extension, size, container signature, and stages into session['current_webinar_upload'].
+    """
+    from app.providers.local_provider import LocalMediaProvider
+
+    if 'file' not in request.files and 'media_file' not in request.files:
+        return jsonify({'success': False, 'message': 'No local media file was provided.'}), 400
+
+    uploaded_file = request.files.get('file') or request.files.get('media_file')
+    if not uploaded_file or uploaded_file.filename == '':
+        return jsonify({'success': False, 'message': 'No file was selected.'}), 400
+
+    source_type = request.form.get('source_type', 'local_file').strip().lower()
+    if source_type not in ('local_file', 'local_folder'):
+        source_type = 'local_file'
+
+    provider = LocalMediaProvider()
+    upload_folder = current_app.config.get('UPLOAD_FOLDER')
+    max_size = current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+
+    result = provider.retrieve_media(
+        source_reference=uploaded_file.filename,
+        destination_dir=upload_folder,
+        max_size_bytes=max_size,
+        file_storage=uploaded_file,
+        source_type=source_type
+    )
+
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'message': result.get('error', 'Local media upload failed.'),
+            'code': result.get('code')
+        }), 400
+
+    # Clean up previous webinar file in current session if replaced
+    previous_upload = session.get('current_webinar_upload')
+    if previous_upload and previous_upload.get('storage_path'):
+        media_service.delete_uploaded_file(previous_upload['storage_path'])
+
+    # Stage validated local media in session
+    session['current_webinar_upload'] = {
+        'source_type': source_type,
+        'input_type': result['input_type'],
+        'original_filename': result['original_filename'],
+        'safe_filename': result['safe_filename'],
+        'storage_path': result['storage_path'],
+        'file_size': result['file_size'],
+        'file_extension': result['file_extension']
+    }
+    session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': result.get('message', 'Local media uploaded and verified on server.'),
+        'details': session['current_webinar_upload']
+    }), 200
+
+# -----------------------------------------------------------------------------
+# Google Drive Media Endpoints (Prompt A4)
+# -----------------------------------------------------------------------------
+
+@dashboard_bp.route('/api/sources/gdrive/status', methods=['GET'])
+@user_required
+def gdrive_status():
+    """Returns whether the active user session has a connected Google account."""
+    connected = bool(session.get('gdrive_token'))
+    return jsonify({
+        'success': True,
+        'connected': connected
+    }), 200
+
+
+@dashboard_bp.route('/api/sources/gdrive/disconnect', methods=['POST'])
+@user_required
+def gdrive_disconnect():
+    """Disconnects Google account and cleans up stored OAuth tokens."""
+    session.pop('gdrive_token', None)
+    session.pop('gdrive_oauth_state', None)
+    session.modified = True
+    return jsonify({
+        'success': True,
+        'connected': False,
+        'message': 'Google account disconnected successfully.'
+    }), 200
+
+
+@dashboard_bp.route('/api/sources/gdrive/check', methods=['POST'])
+@user_required
+def gdrive_check():
+    """Pre-flight check for a Google Drive URL."""
+    from app.providers.gdrive_provider import GDriveMediaProvider
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '').strip()
+
+    if not url:
+        return jsonify({
+            'success': False,
+            'accessibility_status': 'Invalid URL',
+            'message': 'Google Drive file URL is required.'
+        }), 400
+
+    provider = GDriveMediaProvider()
+    result = provider.check_accessibility(
+        source_reference=url,
+        session_token=session.get('gdrive_token'),
+        max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+    )
+    status_code = 200 if result.get('success') else 400
+    return jsonify(result), status_code
+
+
+@dashboard_bp.route('/api/sources/gdrive/retrieve', methods=['POST'])
+@user_required
+def gdrive_retrieve():
+    """
+    Downloads and verifies a Google Drive media recording via official Drive API v3.
+    Stages downloaded media in session['current_webinar_upload'].
+    """
+    from app.providers.gdrive_provider import GDriveMediaProvider
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '').strip()
+
+    if not url:
+        return jsonify({
+            'success': False,
+            'message': 'Google Drive URL is required for retrieval.'
+        }), 400
+
+    provider = GDriveMediaProvider()
+    upload_folder = current_app.config.get('UPLOAD_FOLDER')
+    max_size = current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+
+    result = provider.retrieve_media(
+        source_reference=url,
+        destination_dir=upload_folder,
+        max_size_bytes=max_size,
+        session_token=session.get('gdrive_token')
+    )
+
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'message': result.get('error', 'Google Drive media retrieval failed.'),
+            'code': result.get('code')
+        }), 400
+
+    # Clean up previous webinar file in current session if replaced
+    previous_upload = session.get('current_webinar_upload')
+    if previous_upload and previous_upload.get('storage_path'):
+        media_service.delete_uploaded_file(previous_upload['storage_path'])
+
+    # Stage retrieved file in session
+    session['current_webinar_upload'] = {
+        'source_type': 'gdrive',
+        'input_type': result['input_type'],
+        'original_filename': result['original_filename'],
+        'safe_filename': result['safe_filename'],
+        'storage_path': result['storage_path'],
+        'file_size': result['file_size'],
+        'file_extension': result['file_extension'],
+        'source_url': url
+    }
+    session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': f"Google Drive {result['input_type']} retrieved and verified.",
+        'details': session['current_webinar_upload']
+    }), 200
+
+# -----------------------------------------------------------------------------
+# YouTube Retrieval Endpoints (Prompt A5)
+# -----------------------------------------------------------------------------
+
+@dashboard_bp.route('/api/sources/youtube/check', methods=['POST'])
+@user_required
+def youtube_check():
+    """Pre-flight accessibility and metadata inspection for YouTube video."""
+    from app.providers.youtube_provider import YouTubeProvider
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '').strip()
+
+    if not url:
+        return jsonify({
+            'success': False,
+            'accessibility_status': 'Invalid URL',
+            'message': 'YouTube video URL is required.'
+        }), 400
+
+    caption_content = data.get('caption_content')
+    if not caption_content and request.files:
+        caption_file = request.files.get('caption_file') or request.files.get('file')
+        if caption_file:
+            caption_content = caption_file.read().decode('utf-8', errors='ignore')
+
+    provider = YouTubeProvider()
+    api_key = current_app.config.get('YOUTUBE_API_KEY')
+    result = provider.check_accessibility(
+        source_reference=url,
+        api_key=api_key,
+        caption_content=caption_content
+    )
+    status_code = 200 if result.get('success') else 400
+    return jsonify(result), status_code
+
+
+@dashboard_bp.route('/api/sources/youtube/retrieve', methods=['POST'])
+@user_required
+def youtube_retrieve():
+    """
+    Retrieves official YouTube captions/transcript.
+    Refuses unauthorized video downloading. Stages transcript in session.
+    """
+    from app.providers.youtube_provider import YouTubeProvider
+    data = request.get_json(silent=True) or request.form or {}
+    url = data.get('url', '').strip()
+
+    if not url:
+        return jsonify({
+            'success': False,
+            'message': 'YouTube URL is required for retrieval.'
+        }), 400
+
+    caption_content = data.get('caption_content')
+    if not caption_content and request.files:
+        caption_file = request.files.get('caption_file') or request.files.get('file')
+        if caption_file:
+            caption_content = caption_file.read().decode('utf-8', errors='ignore')
+
+    provider = YouTubeProvider()
+    upload_folder = current_app.config.get('UPLOAD_FOLDER')
+    api_key = current_app.config.get('YOUTUBE_API_KEY')
+
+    result = provider.retrieve_media(
+        source_reference=url,
+        destination_dir=upload_folder,
+        api_key=api_key,
+        caption_content=caption_content
+    )
+
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'message': result.get('error', 'YouTube transcript retrieval failed.'),
+            'code': result.get('code')
+        }), 400
+
+    # Clean up previous webinar file in current session if replaced
+    previous_upload = session.get('current_webinar_upload')
+    if previous_upload and previous_upload.get('storage_path'):
+        media_service.delete_uploaded_file(previous_upload['storage_path'])
+
+    # Stage retrieved transcript in session
+    session['current_webinar_upload'] = {
+        'source_type': 'youtube',
+        'input_type': result['input_type'],
+        'original_filename': result['original_filename'],
+        'safe_filename': result['safe_filename'],
+        'storage_path': result['storage_path'],
+        'file_size': result['file_size'],
+        'file_extension': result['file_extension'],
+        'source_url': url
+    }
+    session.modified = True
+
+    return jsonify({
+        'success': True,
+        'message': 'Official YouTube caption transcript retrieved and staged for processing.',
+        'details': session['current_webinar_upload']
+    }), 200
 
 @dashboard_bp.route('/api/upload-csv', methods=['POST'])
 @user_required
@@ -454,6 +928,9 @@ def submit_job():
             input_type=webinar_data['input_type'],
             input_file_name=webinar_data['original_filename'],
             input_file_path=webinar_data['storage_path'],
+            source_type=webinar_data.get('source_type', 'manual'),
+            source_url=webinar_data.get('source_url'),
+            retrieval_status='completed',
             overall_status='ready',
             transcript_status='pending',
             summary_status='pending',
@@ -630,6 +1107,9 @@ def get_active_job_statuses():
         'jobs': [
             {
                 'id': j.id,
+                'title': j.title,
+                'input_type': j.input_type,
+                'input_file_name': j.input_file_name,
                 'overall_status': j.overall_status,
                 'transcript_status': j.transcript_status,
                 'summary_status': j.summary_status,
@@ -642,7 +1122,8 @@ def get_active_job_statuses():
                 'successful_emails': j.successful_emails,
                 'failed_emails': j.failed_emails,
                 'total_recipients': j.total_recipients,
-                'error_message': j.error_message
+                'error_message': j.error_message,
+                'created_at': j.created_at.strftime('%Y-%m-%d %H:%M:%S') if j.created_at else ''
             }
             for j in jobs
         ]

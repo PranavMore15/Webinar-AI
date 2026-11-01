@@ -20,6 +20,13 @@ class Config:
     # Google Gemini AI Summarization Configuration
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
     GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.5-flash')
+
+    # Google Drive OAuth 2.0 (Prompt A4)
+    GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+    GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+
+    # YouTube Data API v3 (Prompt A5)
+    YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY', '')
     
     # Allowed file extensions
     ALLOWED_VIDEO_EXTENSIONS = {'mp4'}

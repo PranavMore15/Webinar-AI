@@ -10,6 +10,7 @@ Executes asynchronously in a daemon thread so API responses return immediately
 and client-side dashboards receive real-time stage progress updates.
 """
 
+import os
 import logging
 import threading
 from datetime import datetime, timezone
@@ -34,6 +35,19 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
             return {'success': False, 'error': f"Job #{job_id} not found."}
 
         logger.info(f"[Pipeline] Starting automated execution for Job #{job.id} ('{job.title}')...")
+
+        # Idempotency Guard: prevent redundant processing if job already completed
+        if job.overall_status == 'completed':
+            logger.info(f"[Pipeline] Job #{job.id} already completed. Skipping redundant pipeline execution.")
+            return {'success': True, 'job_id': job.id, 'overall_status': 'completed'}
+
+        # Failure Isolation Guard: halt immediately if media retrieval failed
+        if getattr(job, 'retrieval_status', 'completed') == 'failed':
+            logger.error(f"[Pipeline] Job #{job.id} retrieval failed. Halting pipeline before summarization.")
+            job.overall_status = 'failed'
+            job.error_message = f"Media Retrieval Failed: {getattr(job, 'retrieval_error', 'Source media could not be retrieved.')}"
+            db.session.commit()
+            return {'success': False, 'stage': 'retrieval', 'error': job.error_message}
 
         # ---------------------------------------------------------------------
         # Stage 1: Transcript Ingestion / Transcription

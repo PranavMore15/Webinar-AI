@@ -1,8 +1,8 @@
 # WebinarAI — Project Status & Implementation Tracking
 
-**Last Updated:** October 16, 2026  
-**Current Phase:** Prompt 7: Secure SMTP Email Delivery Completed  
-**Target Milestone:** Operational Platform & Demonstration Readiness
+**Last Updated:** November 1, 2026  
+**Current Phase:** Prompt A1: Dashboard Source Selection UI Completed (Awaiting Approval for Prompt A2)  
+**Target Milestone:** Automated Webinar Video Retrieval & Processing Feature
 
 ---
 
@@ -72,7 +72,7 @@
   - Concurrency protection preventing duplicate in-flight dispatch runs (`email_status = 'sending'`).
   - Selective retry mechanism (`/api/jobs/<id>/retry-emails`) re-attempting only failed or pending recipients without re-sending to previously successful students.
   - Interactive Bootstrap 5 dashboard integration with pre-flight confirmation modal, live dispatch trigger, and comprehensive delivery audit report modal.
-- **Test Suite Status:** 162 tests passed across all 10 test modules (0 failures, 0 errors, 0 skipped).
+- **Test Suite Status:** 181 tests passed across all 12 test modules (0 failures, 0 errors, 0 skipped).
 
 ---
 
@@ -205,3 +205,73 @@ Prompt 8 will:
 1. Orchestrate the complete end-to-end processing pipeline from initial upload to summary, PDF, and email dispatch.
 2. Implement asynchronous pipeline execution so long media processing does not block web requests.
 3. Provide live stage status updates and lifecycle progression in the dashboard.
+
+
+---
+
+## 7. New Feature: Automated Webinar Video Retrieval & Processing
+
+### 7.1 Feature Requirements Overview
+A new requirement introduced for WebinarAI: Users should no longer need to manually download external webinar recordings and then upload them. Instead, users supply a recording reference or location, and WebinarAI validates accessibility, verifies content permissions, retrieves the media safely through authorized channels, and continues the standard WebinarAI workflow:
+$$\text{Video/Audio Retrieval} \longrightarrow \text{Audio Extraction (if video)} \longrightarrow \text{Whisper Transcription} \longrightarrow \text{Gemini Summarization} \longrightarrow \text{ReportLab PDF} \longrightarrow \text{SMTP Distribution}$$
+
+All existing manual upload options (MP4, TXT, VTT) and CSV email validation mechanisms are strictly preserved.
+
+### 7.2 Implementation Stages (Prompts A0–A7)
+
+| Stage | Status | Details |
+| :--- | :--- | :--- |
+| **Prompt A0: Assessment & Spec Update** | **COMPLETED** | Completed workspace inspection, codebase assessment, OpenSpec proposal/spec/design/tasks creation, and `PROJECT_SPEC.md` / `PROJECT_STATUS.md` updates. |
+| **Prompt A1: Dashboard Source Selection UI** | **COMPLETED** | Extended dashboard Section A with 6 source options (Direct Link, YouTube, Google Drive, Local File, Local Folder, Manual Upload), implemented client-side dynamic source panels, pre-flight Check Accessibility endpoint (`/api/sources/check-accessibility`), accessibility report card, and 14 automated tests in `test_source_selection_ui.py`. |
+| **Prompt A2: Direct Media Retrieval** | **COMPLETED** | Implemented SSRF defense engine (`app/utils/ssrf.py`) blocking private RFC 1918, loopback, link-local, and cloud metadata IPs with redirect re-validation. Implemented `DirectMediaProvider` (`app/providers/direct_provider.py`) with streaming byte-limit enforcement (`MAX_VIDEO_SIZE`), container signature verification (MP4/M4A `ftyp`, MP3 ID3/MPEG, WAV RIFF), and endpoints (`POST /api/sources/direct/check`, `POST /api/sources/direct/retrieve`). Added 15 tests in `test_direct_media_retrieval.py`. |
+| **Prompt A3: Local File & Folder Selection** | **COMPLETED** | Implemented browser-supported local file and directory selection (`webkitdirectory`) with media filtering (`.mp4`, `.mp3`, `.wav`, `.m4a`), folder media discovery list, explicit file selection, browser fallback notice, `LocalMediaProvider` (`app/providers/local_provider.py`), and endpoint `POST /api/sources/local/upload`. Added 15 tests in `test_local_selection.py`. |
+| **Prompt A4: Google Drive Integration** | **COMPLETED** | Implemented Google OAuth 2.0 flow (`/auth/gdrive/connect`, `/auth/gdrive/callback`) with `drive.readonly` scope and CSRF state verification. Implemented `GDriveMediaProvider` (`app/providers/gdrive_provider.py`) using official `google-api-python-client` with metadata inspection, error handling (401, 403, 404, 429, Google Docs, `canDownload=False`), streaming binary retrieval, and disconnect endpoint (`/api/sources/gdrive/disconnect`). Added 16 tests in `test_gdrive_integration.py`. |
+| **Prompt A5: YouTube Integration** | **COMPLETED** | Implemented `YouTubeProvider` (`app/providers/youtube_provider.py`) parsing watch, youtu.be, shorts, and embed URLs. Implemented official YouTube Data API v3 metadata query, official caption ingestion directly to pipeline, and strict non-bypass guardrails rejecting video stream scraping. Endpoints: `POST /api/sources/youtube/check` and `POST /api/sources/youtube/retrieve`. Added 11 tests in `test_youtube_integration.py`. |
+| **Prompt A6: Pipeline Integration** | **COMPLETED** | Extended MySQL `ProcessingJob` model with `source_type`, `source_url`, `retrieval_status`, and `retrieval_error` with migration script `migrations/add_retrieval_columns.py`. Supported audio-only direct routing to Whisper, failure isolation halting pipeline on retrieval error, and stage idempotency guards. Added 5 tests in `test_pipeline_integration_a6.py`. |
+| **Prompt A7: Testing & Documentation** | **COMPLETED** | Executed 26-scenario verification matrix across 76 new automated tests. Full test suite: **243 passing tests in 92.26s (0 failures, 0 errors, 0 regressions)**. Updated `README.md` and `PROJECT_STATUS.md`. |
+
+### 7.3 External Dependencies & Packages
+- **Planned New Dependencies (To be installed in `.venv` when approved)**:
+  - `google-api-python-client>=2.100.0` (Official Google Drive & YouTube Data API client)
+  - `google-auth-oauthlib>=1.1.0` (Official Google OAuth 2.0 user authorization flow)
+  - `requests>=2.31.0` (Underlying HTTP client, hardened via custom adapter / SSRF socket hooks)
+- **Strictly Prohibited Packages**:
+  - `yt-dlp`, `youtube-dl`, `pytube` (Unauthorized video downloaders/scrapers strictly rejected)
+  - Headless browser scrapers (Selenium, Playwright) for DRM/paywall circumvention
+
+### 7.4 API Requirements & Authentication
+1. **Google Drive API v3**:
+   - Requires Google Cloud Console Project with Google Drive API enabled.
+   - OAuth 2.0 Client ID & Client Secret (Web application type).
+   - Scopes: `https://www.googleapis.com/auth/drive.readonly` (least privilege).
+   - Redirect URI: `http://localhost:5000/auth/gdrive/callback`.
+2. **YouTube Data API v3**:
+   - Requires `YOUTUBE_API_KEY` configured in `.env` for metadata and public caption inspection.
+   - User-specific OAuth can optionally be supported for user-owned private educational recordings.
+3. **Direct HTTP/HTTPS Media**:
+   - Zero API keys required; requires valid public or presigned URLs.
+
+### 7.5 Known Restrictions & Platform Compliance Guardrails
+- **No YouTube Video File Scraping**: YouTube Data API does not provide downloadable MP4 streams for arbitrary videos. Automated video stream extraction is prohibited by YouTube Terms of Service. WebinarAI will retrieve official caption tracks when permitted or guide the user to manual upload when video files cannot be retrieved legally.
+- **No DRM, Paywall, or Subscription Bypass**: WebinarAI will strictly reject media protected by Widevine, FairPlay, or login walls without authorized user credentials.
+- **Browser Security Sandbox**: The web application cannot silently access a user's local filesystem paths. Local folder selection relies on browser-native directory pickers (`webkitdirectory`), transferring only files explicitly selected by the user.
+- **Non-Media Google Drive Files**: Google Docs, Sheets, or Slides links will be detected and rejected with a clear message explaining that native Workspace formats are not audio/video recordings.
+
+### 7.6 Technical Risks & Architectural Mitigations
+- **SSRF Attacks & DNS Rebinding**:
+  - *Risk*: Malicious URLs pointing to internal services (`http://169.254.169.254`, `http://192.168.1.1`, or rebinding domains).
+  - *Mitigation*: Pre-flight DNS resolution, IP range blacklisting (`ipaddress`), socket-level IP binding, target re-verification on every HTTP redirect, and blocking non-standard ports.
+- **Denial of Service via Infinite Streams**:
+  - *Risk*: A remote URL serving a continuous endless byte stream causing disk/memory exhaustion.
+  - *Mitigation*: Stream data in 64KB chunks with strict cumulative byte counting up to `MAX_VIDEO_SIZE` (250MB) and total timeout enforcement (60s).
+- **Google Drive Large Files & Token Expiry**:
+  - *Risk*: Downloads stalling or OAuth access tokens expiring during long transfers.
+  - *Mitigation*: Automatic token refresh using stored refresh tokens; chunked media download via Google API client.
+- **Browser Compatibility with Directory Selection**:
+  - *Risk*: Older or non-Chromium browsers may have varying support for `webkitdirectory`.
+  - *Mitigation*: Feature detection with graceful fallback to standard multi-file or single-file browser selection.
+
+### 7.7 Pending Decisions & Configuration Inputs
+1. **Google Cloud Credentials**: Setting up `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `YOUTUBE_API_KEY` in `.env` for testing Stages A4 and A5.
+2. **Audio-Only Media Types**: Formalizing default support for audio-only inputs (`.mp3`, `.wav`, `.m4a`) in `media_service.py` and `pipeline_service.py` (skipping video extraction and feeding directly to Whisper).
+3. **Database Migration Strategy**: Adding `source_type`, `source_url`, `retrieval_status`, and `retrieval_error` to `processing_jobs` using an automated migration script vs modifying `init_db.py`.

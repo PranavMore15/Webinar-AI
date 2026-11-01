@@ -114,10 +114,70 @@ The server will start on:
 
 ### 5. Running Automated Tests
 
-To run the complete automated test suite (99 tests across all 7 test modules):
+To run the complete automated test suite (**243 tests** across 17 test modules):
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+---
+
+## Feature: Automated Webinar Video Retrieval & Processing
+
+WebinarAI supports multi-source webinar media retrieval, eliminating manual downloads:
+1. **Direct Video/Audio Links**:
+   - Downloads MP4 video or MP3/WAV/M4A audio directly over HTTP/HTTPS.
+   - Protected by server-side **SSRF defenses** (`app/utils/ssrf.py`): DNS resolution checks, private IP blocking (RFC 1918, RFC 3927), link-local & cloud metadata rejection (`169.254.169.254`), approved port restrictions (80, 443, 8080, 8443), redirect re-validation, and streaming chunk-level byte counting (`MAX_VIDEO_SIZE` 250 MB).
+   - Validates binary container magic signatures (`ftyp` box for MP4/M4A, ID3/MPEG frame sync for MP3, RIFF/WAVE for WAV) and rejects HTML error pages disguised as `.mp4`.
+2. **Local Computer File & Folder Selection**:
+   - Browser-authorized file picker and folder selector (`webkitdirectory`).
+   - Discovers supported media files inside selected folders, displaying an interactive file inspector.
+   - User explicitly selects the target recording (never silently uploading entire directory trees).
+3. **Google Drive Integration**:
+   - Connects user Google accounts via official Google OAuth 2.0 (`drive.readonly` scope) with CSRF state verification.
+   - Queries metadata via official Google Drive API v3.
+   - Enforces download permission verification (`canDownload`), rate limit handling, and streams media directly into the processing pipeline.
+   - Provides safe account disconnection endpoint (`/api/sources/gdrive/disconnect`).
+4. **YouTube Compliance & Official Caption Integration**:
+   - Validates YouTube video URLs across `watch?v=`, `youtu.be/`, and `/shorts/` formats.
+   - Inspects video metadata and official caption tracks via official YouTube Data API v3.
+   - When permitted captions are available, ingests the WebVTT transcript directly into the summarization pipeline without downloading video streams.
+   - **Strict Non-Bypass Guardrails**: Unauthorized video downloading, stream scraping, or bypass tools (`yt-dlp`, `youtube-dl`) are strictly rejected. If captions are unavailable, users are clearly guided to manual upload.
+5. **Direct Audio Pipeline Routing**:
+   - Audio recordings (MP3, WAV, M4A) bypass video extraction and feed directly to Whisper transcription.
+6. **Preserved Manual Uploads**:
+   - Manual MP4 video, TXT transcript, and WebVTT transcript uploads remain fully functional.
+
+---
+
+## Configuration Variables (.env)
+
+```env
+# Flask Core
+FLASK_APP=run.py
+FLASK_ENV=development
+SECRET_KEY=your-secure-secret-key
+
+# Database (MySQL)
+DATABASE_URI=mysql+pymysql://root:password@localhost:3306/webinar_ai_db
+
+# Gemini AI Summarization
+GEMINI_API_KEY=your-gemini-api-key
+
+# SMTP Distribution
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=True
+SMTP_USERNAME=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
+SMTP_FROM_EMAIL=your_email@gmail.com
+
+# Google Drive OAuth 2.0 (Prompt A4)
+GOOGLE_CLIENT_ID=your-google-oauth-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
+
+# YouTube Data API v3 (Prompt A5)
+YOUTUBE_API_KEY=your-youtube-data-api-key
 ```
 
 ---
@@ -135,44 +195,53 @@ WebinarAI/
 ├── requirements.txt          # Python dependencies
 ├── run.py                    # Application launcher
 ├── init_db.py                # Database migration and admin provisioning CLI
+├── migrations/
+│   └── add_retrieval_columns.py # Schema migration for automated retrieval columns
 ├── app/
 │   ├── __init__.py           # Flask app factory
 │   ├── config.py             # Configuration (storage folders, size limits, FFmpeg & Whisper settings)
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── schema.py         # SQLAlchemy models (User with role & is_active, ProcessingJob, JobRecipient)
+│   │   └── schema.py         # SQLAlchemy models (User, ProcessingJob with retrieval columns, JobRecipient)
+│   ├── providers/            # Content retrieval providers (Prompt A2-A5)
+│   │   ├── __init__.py
+│   │   ├── base.py           # BaseRetrievalProvider abstract interface
+│   │   ├── direct_provider.py # Direct media retrieval with container verification
+│   │   ├── local_provider.py # Local computer file and folder discovery provider
+│   │   ├── gdrive_provider.py# Google Drive API v3 official provider
+│   │   └── youtube_provider.py# YouTube Data API v3 official caption provider
 │   ├── routes/
 │   │   ├── __init__.py
-│   │   ├── auth_routes.py    # Registration, user login, admin login, session routes
+│   │   ├── auth_routes.py    # Registration, user login, admin login, Google OAuth routes
 │   │   ├── admin_routes.py   # Admin console, user status toggling, diagnostics
-│   │   └── dashboard_routes.py # Processing workspace, /api/upload-webinar, /api/upload-csv, /api/submit-job
+│   │   └── dashboard_routes.py # Processing workspace, content source endpoints, submit-job
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── csv_service.py    # CSV validation & email deduplication engine
 │   │   ├── media_service.py  # MP4/TXT/VTT validation, safe storage, and cleanup
-│   │   ├── transcript_service.py # TXT and WebVTT parsing & speaker normalization
-│   │   ├── audio_service.py  # FFmpeg audio extraction, duration probe & chunking
-│   │   └── transcription_service.py # Local CPU Whisper transcription and chunk stitching
+│   │   ├── transcript_service.py # Audio/video transcript routing & speaker normalization
+│   │   ├── audio_service.py  # FFmpeg audio extraction & chunking
+│   │   ├── transcription_service.py # Local CPU Whisper transcription
+│   │   ├── gemini_service.py # AI summarization engine
+│   │   ├── pdf_service.py    # ReportLab PDF compilation
+│   │   ├── email_service.py  # SMTP email distribution
+│   │   └── pipeline_service.py # Asynchronous job pipeline orchestration & idempotency guards
 │   ├── utils/
 │   │   ├── __init__.py
-│   │   └── auth.py           # Role-based decorators (@login_required, @admin_required) and validators
+│   │   ├── auth.py           # Role-based decorators and validators
+│   │   └── ssrf.py           # SSRF defense engine (DNS, IP ranges, redirect safety)
 │   ├── static/
 │   │   ├── css/style.css     # Custom dashboard styling
-│   │   └── js/dashboard.js   # Dynamic frontend logic & AJAX upload handler
+│   │   └── js/dashboard.js   # Dynamic frontend logic & source selectors
 │   └── templates/
 │       ├── base.html         # Bootstrap 5 base layout with role navigation
-│       ├── login.html        # Authentication view with User/Admin toggle
+│       ├── login.html        # Authentication view
 │       ├── register.html     # User registration form
-│       ├── dashboard.html    # Full processing workspace
+│       ├── dashboard.html    # Processing workspace with 6 Webinar Content Sources
 │       └── admin/
-│           └── dashboard.html # Administrator console (user management, global job audit)
-├── sample_data/              # Test files for demonstration
-│   ├── sample_students.csv   # Mixed CSV (valid, duplicates, malformed, blank)
-│   ├── sample_missing_email_column.csv # Rejected CSV missing email header
-│   ├── sample_webinar.txt    # Sample TXT transcript
-│   └── sample_webinar.vtt    # Sample WebVTT transcript with speaker tags
+│           └── dashboard.html # Administrator console
 ├── storage/                  # Controlled local storage directories
-│   ├── uploads/              # Validated MP4, TXT, VTT uploads (UUID-prefixed)
+│   ├── uploads/              # Staged recordings and transcripts (UUID-prefixed)
 │   ├── audio/                # Extracted 16kHz mono WAV audio tracks
 │   └── pdfs/                 # Generated PDF knowledge briefs
 └── tests/
@@ -181,6 +250,16 @@ WebinarAI/
     ├── test_database_models_offline.py# Offline SQLAlchemy model unit tests (7 tests)
     ├── test_media_upload_pipeline.py  # Media upload & job persistence tests (25 tests)
     ├── test_media_audio_processing.py # Audio extraction & Whisper transcription (19 tests)
-    ├── test_role_based_auth.py        # Registration, login, roles, admin safeguards, manual recipients (31 tests)
-    └── test_mysql_live.py             # Live MySQL integration tests on localhost:3306 (6 tests)
+    ├── test_gemini_summarization.py   # Gemini AI summarization tests (17 tests)
+    ├── test_pdf_generation.py         # ReportLab PDF generation tests (16 tests)
+    ├── test_email_delivery.py         # SMTP email delivery tests (26 tests)
+    ├── test_role_based_auth.py        # Registration, login, roles, admin safeguards (31 tests)
+    ├── test_pipeline_and_status.py    # Pipeline execution & status polling tests (5 tests)
+    ├── test_mysql_live.py             # Live MySQL integration tests on localhost:3306 (6 tests)
+    ├── test_source_selection_ui.py    # Source selector UI & accessibility check tests (14 tests)
+    ├── test_direct_media_retrieval.py # Direct media retrieval & SSRF protection tests (15 tests)
+    ├── test_local_selection.py        # Local file & folder selection tests (15 tests)
+    ├── test_gdrive_integration.py     # Google Drive OAuth & API retrieval tests (16 tests)
+    ├── test_youtube_integration.py    # YouTube Data API & caption tests (11 tests)
+    └── test_pipeline_integration_a6.py# Schema, failure isolation & idempotency tests (5 tests)
 ```

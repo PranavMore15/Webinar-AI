@@ -33,8 +33,8 @@
                             <i class="bi bi-film fs-5"></i>
                         </span>
                         <div>
-                            <h5 class="fw-bold mb-0 text-dark">Section A: Webinar Content</h5>
-                            <span class="text-muted small">Select MP4 video OR text transcript (mutually exclusive)</span>
+                            <h5 class="fw-bold mb-0 text-dark">Section A: Webinar Content Source</h5>
+                            <span class="text-muted small">Select an automated recording source or manual upload</span>
                         </div>
                     </div>
                     <span id="webinarStatusBadge" class="badge bg-secondary-subtle text-secondary rounded-pill px-3 py-1">
@@ -43,47 +43,274 @@
                 </div>
                 
                 <div class="card-body p-4 d-flex flex-column">
-                    <!-- Mutually Exclusive Radio Selector -->
+                    <!-- Webinar Content Source Mode Selector (6 Options) -->
                     <div class="mb-3">
-                        <label class="form-label fw-semibold text-secondary small text-uppercase">Input Source Mode</label>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <input type="radio" class="btn-check" name="webinarSourceType" id="sourceTypeVideo" value="video" checked autocomplete="off">
-                                <label class="btn btn-outline-primary w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3" for="sourceTypeVideo">
-                                    <i class="bi bi-camera-video-fill"></i>
-                                    <span>Video (.mp4)</span>
+                        <label class="form-label fw-semibold text-secondary small text-uppercase">Webinar Content Source</label>
+                        <div class="row g-2" id="sourceSelectorGrid">
+                            <div class="col-6 col-sm-4">
+                                <input type="radio" class="btn-check" name="contentSourceMode" id="modeManual" value="manual" checked autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex flex-column align-items-center justify-content-center gap-1 rounded-3 h-100 text-center" for="modeManual">
+                                    <i class="bi bi-cloud-arrow-up fs-5"></i>
+                                    <span class="small fw-semibold">Manual Upload</span>
                                 </label>
                             </div>
-                            <div class="col-6">
-                                <input type="radio" class="btn-check" name="webinarSourceType" id="sourceTypeTranscript" value="transcript" autocomplete="off">
-                                <label class="btn btn-outline-primary w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3" for="sourceTypeTranscript">
-                                    <i class="bi bi-file-earmark-text-fill"></i>
-                                    <span>Transcript (.txt/.vtt)</span>
+                            <div class="col-6 col-sm-4">
+                                <input type="radio" class="btn-check" name="contentSourceMode" id="modeDirect" value="direct" autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex flex-column align-items-center justify-content-center gap-1 rounded-3 h-100 text-center" for="modeDirect">
+                                    <i class="bi bi-link-45deg fs-5"></i>
+                                    <span class="small fw-semibold">Direct Link</span>
+                                </label>
+                            </div>
+                            <div class="col-6 col-sm-4">
+                                <input type="radio" class="btn-check" name="contentSourceMode" id="modeYouTube" value="youtube" autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex flex-column align-items-center justify-content-center gap-1 rounded-3 h-100 text-center" for="modeYouTube">
+                                    <i class="bi bi-youtube fs-5 text-danger"></i>
+                                    <span class="small fw-semibold">YouTube</span>
+                                </label>
+                            </div>
+                            <div class="col-6 col-sm-4">
+                                <input type="radio" class="btn-check" name="contentSourceMode" id="modeGDrive" value="gdrive" autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex flex-column align-items-center justify-content-center gap-1 rounded-3 h-100 text-center" for="modeGDrive">
+                                    <i class="bi bi-google fs-5 text-success"></i>
+                                    <span class="small fw-semibold">Google Drive</span>
+                                </label>
+                            </div>
+                            <div class="col-6 col-sm-4">
+                                <input type="radio" class="btn-check" name="contentSourceMode" id="modeLocalFile" value="local_file" autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex flex-column align-items-center justify-content-center gap-1 rounded-3 h-100 text-center" for="modeLocalFile">
+                                    <i class="bi bi-laptop fs-5 text-info"></i>
+                                    <span class="small fw-semibold">Local File</span>
+                                </label>
+                            </div>
+                            <div class="col-6 col-sm-4">
+                                <input type="radio" class="btn-check" name="contentSourceMode" id="modeLocalFolder" value="local_folder" autocomplete="off">
+                                <label class="btn btn-outline-primary w-100 py-2 d-flex flex-column align-items-center justify-content-center gap-1 rounded-3 h-100 text-center" for="modeLocalFolder">
+                                    <i class="bi bi-folder-symlink fs-5 text-warning"></i>
+                                    <span class="small fw-semibold">Local Folder</span>
                                 </label>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Video Upload Area (Option 1) -->
-                    <div id="videoUploadContainer" class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3">
-                        <i class="bi bi-cloud-arrow-up display-6 text-primary mb-2 d-block"></i>
-                        <h6 class="fw-bold mb-1">Select Webinar MP4 Video</h6>
-                        <p class="text-muted small mb-3">Standard recording format supported (.mp4)</p>
-                        <input type="file" id="videoFileInput" class="d-none" accept=".mp4,video/mp4">
-                        <button type="button" class="btn btn-sm btn-primary rounded-pill px-4" onclick="document.getElementById('videoFileInput').click()">
-                            <i class="bi bi-folder2-open me-1"></i> Browse MP4 File
-                        </button>
+                    <!-- Panel 1: Existing Manual Upload (Video MP4 or Transcript TXT/VTT) -->
+                    <div id="panelSourceManual" class="source-panel">
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold text-secondary small text-uppercase">Manual Format Mode</label>
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <input type="radio" class="btn-check" name="webinarSourceType" id="sourceTypeVideo" value="video" checked autocomplete="off">
+                                    <label class="btn btn-outline-secondary w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3" for="sourceTypeVideo">
+                                        <i class="bi bi-camera-video-fill text-primary"></i>
+                                        <span>Video (.mp4)</span>
+                                    </label>
+                                </div>
+                                <div class="col-6">
+                                    <input type="radio" class="btn-check" name="webinarSourceType" id="sourceTypeTranscript" value="transcript" autocomplete="off">
+                                    <label class="btn btn-outline-secondary w-100 py-2 d-flex align-items-center justify-content-center gap-2 rounded-3" for="sourceTypeTranscript">
+                                        <i class="bi bi-file-earmark-text-fill text-info"></i>
+                                        <span>Transcript (.txt/.vtt)</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Video Upload Area (Option 1) -->
+                        <div id="videoUploadContainer" class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3">
+                            <i class="bi bi-cloud-arrow-up display-6 text-primary mb-2 d-block"></i>
+                            <h6 class="fw-bold mb-1">Select Webinar MP4 Video</h6>
+                            <p class="text-muted small mb-3">Standard recording format supported (.mp4)</p>
+                            <input type="file" id="videoFileInput" class="d-none" accept=".mp4,video/mp4">
+                            <button type="button" class="btn btn-sm btn-primary rounded-pill px-4" onclick="document.getElementById('videoFileInput').click()">
+                                <i class="bi bi-folder2-open me-1"></i> Browse MP4 File
+                            </button>
+                        </div>
+
+                        <!-- Transcript Upload Area (Option 2 - Hidden by default) -->
+                        <div id="transcriptUploadContainer" class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3 d-none">
+                            <i class="bi bi-file-earmark-code display-6 text-indigo mb-2 d-block"></i>
+                            <h6 class="fw-bold mb-1">Select Webinar Transcript</h6>
+                            <p class="text-muted small mb-3">Plain text or WebVTT subtitle files (.txt, .vtt)</p>
+                            <input type="file" id="transcriptFileInput" class="d-none" accept=".txt,.vtt,text/plain,text/vtt">
+                            <button type="button" class="btn btn-sm btn-primary rounded-pill px-4" onclick="document.getElementById('transcriptFileInput').click()">
+                                <i class="bi bi-folder2-open me-1"></i> Browse Transcript File
+                            </button>
+                        </div>
                     </div>
 
-                    <!-- Transcript Upload Area (Option 2 - Hidden by default) -->
-                    <div id="transcriptUploadContainer" class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3 d-none">
-                        <i class="bi bi-file-earmark-code display-6 text-indigo mb-2 d-block"></i>
-                        <h6 class="fw-bold mb-1">Select Webinar Transcript</h6>
-                        <p class="text-muted small mb-3">Plain text or WebVTT subtitle files (.txt, .vtt)</p>
-                        <input type="file" id="transcriptFileInput" class="d-none" accept=".txt,.vtt,text/plain,text/vtt">
-                        <button type="button" class="btn btn-sm btn-primary rounded-pill px-4" onclick="document.getElementById('transcriptFileInput').click()">
-                            <i class="bi bi-folder2-open me-1"></i> Browse Transcript File
-                        </button>
+                    <!-- Panel 2: Direct Video/Audio Link -->
+                    <div id="panelSourceDirect" class="source-panel d-none">
+                        <div class="p-3 bg-light rounded-3 border mb-3">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <i class="bi bi-link-45deg fs-4 text-primary"></i>
+                                <h6 class="fw-bold mb-0">Direct Media Recording Link</h6>
+                            </div>
+                            <p class="text-muted small mb-3">
+                                Provide a direct HTTP/HTTPS URL pointing to an MP4 video or MP3/WAV/M4A audio recording. The link must be reachable without login credentials or dynamic session cookies.
+                            </p>
+                            <div class="input-group mb-2">
+                                <span class="input-group-text bg-white"><i class="bi bi-globe text-secondary"></i></span>
+                                <input type="url" id="directMediaUrlInput" class="form-control" placeholder="https://example.com/recordings/seminar.mp4">
+                                <button type="button" id="btnCheckDirectAccessibility" class="btn btn-primary px-3">
+                                    <i class="bi bi-shield-check me-1"></i> Check Accessibility
+                                </button>
+                            </div>
+                            <span class="text-muted small d-block">
+                                <i class="bi bi-info-circle me-1"></i> Formats supported: <code>.mp4</code>, <code>.mp3</code>, <code>.wav</code>, <code>.m4a</code> (Up to 250MB limit)
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- Panel 3: YouTube -->
+                    <div id="panelSourceYouTube" class="source-panel d-none">
+                        <div class="p-3 bg-light rounded-3 border mb-3">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <i class="bi bi-youtube fs-4 text-danger"></i>
+                                <h6 class="fw-bold mb-0">YouTube Video Link</h6>
+                            </div>
+                            <p class="text-muted small mb-3">
+                                Enter a public or unlisted YouTube video URL. Official metadata and permitted captions will be inspected. <em>Unauthorized video downloading or stream scraping is strictly prohibited.</em>
+                            </p>
+                            <div class="input-group mb-2">
+                                <span class="input-group-text bg-white"><i class="bi bi-play-btn text-danger"></i></span>
+                                <input type="url" id="youtubeUrlInput" class="form-control" placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/...">
+                                <button type="button" id="btnCheckYouTubeAccessibility" class="btn btn-danger px-3">
+                                    <i class="bi bi-youtube me-1"></i> Check Accessibility
+                                </button>
+                            </div>
+                            <span class="text-muted small d-block">
+                                <i class="bi bi-info-circle me-1"></i> Supports <code>watch?v=</code>, <code>youtu.be/</code>, and <code>/shorts/</code> formats
+                            </span>
+
+                            <!-- YouTube Caption / Transcript Fallback Section -->
+                            <div id="youtubeTranscriptFallbackSection" class="mt-3 pt-3 border-top">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <label class="form-label fw-semibold small mb-0 d-flex align-items-center gap-1">
+                                        <i class="bi bi-file-earmark-text text-primary"></i> Accompanying Transcript / Captions <span class="badge bg-secondary-subtle text-secondary font-monospace" style="font-size: 0.7rem;">Optional / Fallback</span>
+                                    </label>
+                                    <span class="text-muted small" style="font-size: 0.75rem;">If official captions are not available</span>
+                                </div>
+                                <div class="row g-2">
+                                    <div class="col-md-6">
+                                        <label for="youtubeCaptionFileInput" class="form-label text-muted small mb-1">Upload Caption / Transcript File (.vtt, .txt)</label>
+                                        <input type="file" id="youtubeCaptionFileInput" class="form-control form-control-sm" accept=".vtt,.txt">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="youtubeTranscriptText" class="form-label text-muted small mb-1">Or Paste Transcript Text</label>
+                                        <textarea id="youtubeTranscriptText" class="form-control form-control-sm font-monospace" rows="2" placeholder="Paste lecture transcript or WebVTT cue lines here..."></textarea>
+                                    </div>
+                                </div>
+                                <div id="youtubeTranscriptAttachedNotice" class="alert alert-success py-1 px-2 mt-2 d-none align-items-center justify-content-between mb-0" style="font-size: 0.8rem;">
+                                    <span><i class="bi bi-check2-circle me-1 text-success"></i> <strong id="youtubeTranscriptAttachedLabel">Transcript attached:</strong> ready for AI summarization.</span>
+                                    <button type="button" id="btnClearYouTubeTranscript" class="btn btn-link btn-sm text-danger text-decoration-none p-0" style="font-size: 0.75rem;">Clear</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Panel 4: Google Drive -->
+                    <div id="panelSourceGDrive" class="source-panel d-none">
+                        <div class="p-3 bg-light rounded-3 border mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <div class="d-flex align-items-center gap-2">
+                                    <i class="bi bi-google fs-4 text-success"></i>
+                                    <h6 class="fw-bold mb-0">Google Drive Integration</h6>
+                                </div>
+                                <span id="gdriveAuthBadge" class="badge bg-secondary-subtle text-secondary border rounded-pill px-2 py-1 small">
+                                    <i class="bi bi-lock me-1"></i> Not Connected
+                                </span>
+                            </div>
+                            <p class="text-muted small mb-3">
+                                Ingest webinar recordings stored in Google Drive via the official Google Drive API. Requires authorized account connection with least-privilege read access.
+                            </p>
+                            <div class="input-group mb-2">
+                                <span class="input-group-text bg-white"><i class="bi bi-hdd-network text-success"></i></span>
+                                <input type="url" id="gdriveUrlInput" class="form-control" placeholder="https://drive.google.com/file/d/.../view">
+                                <button type="button" id="btnCheckGDriveAccessibility" class="btn btn-success px-3">
+                                    <i class="bi bi-shield-check me-1"></i> Check Accessibility
+                                </button>
+                            </div>
+                            <div class="d-flex justify-content-between align-items-center mt-2 pt-2 border-top">
+                                <span class="text-muted small">Account Authorization:</span>
+                                <button type="button" id="btnConnectGDrive" class="btn btn-outline-secondary btn-sm rounded-pill px-3">
+                                    <i class="bi bi-box-arrow-in-right me-1"></i> Connect Google Account
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Panel 5: Local Computer File -->
+                    <div id="panelSourceLocalFile" class="source-panel d-none">
+                        <div class="upload-dropzone p-4 text-center border-dashed rounded-3 bg-light mb-3">
+                            <i class="bi bi-laptop display-6 text-info mb-2 d-block"></i>
+                            <h6 class="fw-bold mb-1">Select Local Computer Recording</h6>
+                            <p class="text-muted small mb-3">Browser-authorized file selection for MP4, MP3, WAV, or M4A</p>
+                            <input type="file" id="localMediaFileInput" class="d-none" accept=".mp4,.mp3,.wav,.m4a,video/mp4,audio/*">
+                            <button type="button" class="btn btn-sm btn-info text-white rounded-pill px-4" onclick="document.getElementById('localMediaFileInput').click()">
+                                <i class="bi bi-folder2-open me-1"></i> Choose Local Media File
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Panel 6: Local Computer Folder -->
+                    <div id="panelSourceLocalFolder" class="source-panel d-none">
+                        <div class="p-3 bg-light rounded-3 border mb-3">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <i class="bi bi-folder-symlink fs-4 text-warning"></i>
+                                <h6 class="fw-bold mb-0">Local Computer Folder Selection</h6>
+                            </div>
+                            <p class="text-muted small mb-3">
+                                Select a local folder containing your webinar recordings. The browser will list supported media files so you can select the intended recording.
+                            </p>
+                            <input type="file" id="localFolderInput" class="d-none" webkitdirectory directory multiple>
+                            <div class="text-center py-2 mb-3">
+                                <button type="button" class="btn btn-sm btn-warning rounded-pill px-4" onclick="document.getElementById('localFolderInput').click()">
+                                    <i class="bi bi-folder2-open me-1"></i> Choose Local Folder
+                                </button>
+                            </div>
+                            <!-- Browser compatibility warning -->
+                            <div id="folderCompatibilityNotice" class="alert alert-warning border-0 small py-2 px-3 d-none mb-2">
+                                <i class="bi bi-exclamation-triangle-fill me-1"></i> Your browser does not support folder selection. Please select individual files.
+                            </div>
+                            <!-- Discovered Media Files in Folder -->
+                            <div id="folderDiscoveredContainer" class="d-none border-top pt-2">
+                                <div class="fw-semibold small text-secondary mb-2">Discovered Media Files in Folder:</div>
+                                <div id="folderFilesList" class="list-group list-group-flush small" style="max-height: 180px; overflow-y: auto;">
+                                    <!-- Populated dynamically via JS -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pre-Flight Accessibility & Validation Report Card -->
+                    <div id="accessibilityReportCard" class="card border border-primary-subtle bg-white shadow-sm rounded-3 p-3 mb-3 d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-2 py-1 small" id="accessSourceTypeBadge">
+                                    Direct URL
+                                </span>
+                                <strong class="small text-dark text-truncate" id="accessSourceTitle" style="max-width: 250px;">
+                                    https://example.com/recording.mp4
+                                </strong>
+                            </div>
+                            <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill px-2.5 py-1 small" id="accessStatusBadge">
+                                Checking...
+                            </span>
+                        </div>
+                        <div class="small text-muted mb-2" id="accessMetadataRow">
+                            <span class="me-3"><i class="bi bi-file-earmark me-1"></i>Type: <code id="accessMediaType">video/mp4</code></span>
+                            <span class="me-3"><i class="bi bi-hdd me-1"></i>Size: <strong id="accessFileSize">Pending check</strong></span>
+                            <span><i class="bi bi-check-circle me-1"></i>Eligibility: <span id="accessEligibility" class="text-success fw-semibold">Eligible</span></span>
+                        </div>
+                        <div class="p-2 bg-light rounded-2 small mb-2" id="accessExplanation">
+                            Status message details will be displayed here.
+                        </div>
+                        <!-- User Confirmation Checkbox -->
+                        <div class="form-check small mt-1">
+                            <input class="form-check-input" type="checkbox" id="chkAuthorizationConfirmation">
+                            <label class="form-check-label text-secondary" for="chkAuthorizationConfirmation">
+                                I confirm I am authorized to access this recording and distribute generated summaries to student recipients.
+                            </label>
+                        </div>
                     </div>
 
                     <!-- Loading Indicator for Webinar Upload & Verification -->
@@ -91,7 +318,7 @@
                         <div class="spinner-border text-primary" role="status" style="width: 2.2rem; height: 2.2rem;">
                             <span class="visually-hidden">Uploading...</span>
                         </div>
-                        <div class="small fw-semibold text-secondary mt-2">Uploading & Verifying Webinar Media on Server...</div>
+                        <div class="small fw-semibold text-secondary mt-2" id="webinarLoadingText">Uploading & Verifying Webinar Media on Server...</div>
                     </div>
 
                     <!-- Webinar Error State Alert -->
@@ -113,7 +340,7 @@
                                 <div class="text-truncate">
                                     <div id="webinarFileName" class="fw-bold text-dark text-truncate">file.mp4</div>
                                     <div class="text-muted small">
-                                        Size: <span id="webinarFileSize">0 MB</span> &bull; Type: <span id="webinarFileTypeBadge" class="badge text-bg-light border">MP4</span> &bull; <span class="badge text-bg-primary-subtle text-primary border border-primary-subtle">Server Verified</span>
+                                        Size: <span id="webinarFileSize">0 MB</span> &bull; Type: <span id="webinarFileTypeBadge" class="badge text-bg-light border">MP4</span> &bull; <span class="badge text-bg-primary-subtle text-primary border border-primary-subtle" id="webinarVerifiedBadge">Server Verified</span>
                                     </div>
                                 </div>
                             </div>
@@ -410,13 +637,12 @@
 
         <div class="card-body p-4">
             <!-- Active & Recent Processing Jobs List -->
-            {% if recent_jobs %}
-            <div id="recentJobsContainer" class="table-responsive mb-4">
+            <div id="recentJobsContainer" class="table-responsive mb-4 {{ 'd-none' if not recent_jobs else '' }}">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <h6 class="fw-bold mb-0 text-dark">
                         <i class="bi bi-list-task text-primary me-1"></i> Registered Processing Jobs (MySQL Persisted)
                     </h6>
-                    <span class="badge bg-primary-subtle text-primary">{{ recent_jobs|length }} Job{{ 's' if recent_jobs|length != 1 else '' }}</span>
+                    <span id="recentJobsCountBadge" class="badge bg-primary-subtle text-primary">{{ recent_jobs|length }} Job{{ 's' if recent_jobs|length != 1 else '' }}</span>
                 </div>
                 <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border small">
                     <thead class="table-light">
@@ -431,7 +657,7 @@
                             <th class="text-end pe-3" style="min-width: 155px;">Email Delivery</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="recentJobsTableBody">
                         {% for job in recent_jobs %}
                         <tr id="job-row-{{ job.id }}" data-job-id="{{ job.id }}">
                             <td><span class="badge text-bg-light border font-monospace fw-bold">#{{ job.id }}</span></td>
@@ -455,7 +681,7 @@
                                 <span class="badge bg-success-subtle text-success border border-success-subtle">
                                     <i class="bi bi-check2-circle me-1"></i>Completed
                                 </span>
-                                {% elif job.overall_status in ['transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing'] %}
+                                {% elif job.overall_status in ['ready', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing'] %}
                                 <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
                                     <span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>
                                     {{ job.overall_status|replace('_', ' ')|capitalize }}
@@ -560,9 +786,9 @@
                     </tbody>
                 </table>
             </div>
-            {% else %}
+
             <!-- Empty State (Active when no jobs exist) -->
-            <div id="jobEmptyState" class="text-center py-5">
+            <div id="jobEmptyState" class="text-center py-5 {{ 'd-none' if recent_jobs else '' }}">
                 <div class="avatar-lg mx-auto mb-3 text-secondary opacity-50">
                     <i class="bi bi-inbox-fill display-4"></i>
                 </div>
@@ -574,15 +800,12 @@
                     <i class="bi bi-info-circle me-1"></i> View Processing Lifecycle Guide
                 </button>
             </div>
-            {% endif %}
 
-            {% if recent_jobs %}
-            <div class="text-end mb-2">
+            <div id="lifecycleDemoToggleContainer" class="text-end mb-2 {{ 'd-none' if not recent_jobs else '' }}">
                 <button class="btn btn-sm btn-link text-decoration-none small text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#lifecycleDemoCollapse">
                     <i class="bi bi-info-circle me-1"></i> View Processing Lifecycle Guide
                 </button>
             </div>
-            {% endif %}
 
             <!-- System Processing Lifecycle Reference (Expandable) -->
             <div class="collapse mt-4" id="lifecycleDemoCollapse">
@@ -754,6 +977,14 @@
                     <i class="bi bi-exclamation-triangle-fill me-1"></i>
                     <strong id="modalErrorTitle">Pipeline Error</strong>
                     <div id="modalErrorMessage">Error details.</div>
+                    <div id="modalRecoveryActions" class="mt-2 pt-2 border-top border-danger-subtle d-none d-flex gap-2 flex-wrap">
+                        <button type="button" id="btnModalAttachTranscript" class="btn btn-sm btn-outline-danger">
+                            <i class="bi bi-file-earmark-text me-1"></i> Attach Transcript
+                        </button>
+                        <button type="button" id="btnModalSwitchManual" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-upload me-1"></i> Switch to Manual Upload
+                        </button>
+                    </div>
                 </div>
 
                 <div id="modalSubmissionExplainer" class="alert alert-info py-2 px-3 mb-0 small border-0 bg-info-subtle text-info-emphasis rounded-3">

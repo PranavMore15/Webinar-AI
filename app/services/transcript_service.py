@@ -264,23 +264,35 @@ def parse_transcript_by_type(file_path: str, input_type: str = None) -> dict:
 
 def process_webinar_to_transcript(input_type: str, file_path: str) -> dict:
     """
-    Unified processing entry point for Prompt 4:
+    Unified processing entry point:
     - If input_type == 'transcript': parses TXT or VTT directly; DOES NOT invoke FFmpeg or Whisper.
+    - If input_type == 'audio': skips video extraction; chunks if needed and transcribes via Whisper.
     - If input_type == 'video': extracts audio via FFmpeg, chunks if needed, and transcribes via Whisper.
     """
     if input_type == 'transcript':
         return parse_transcript_by_type(file_path)
-    elif input_type == 'video':
+    elif input_type in ('video', 'audio'):
         from app.services import audio_service, transcription_service
-        audio_info = audio_service.extract_audio_from_video(file_path)
-        audio_path = audio_info['audio_path']
-        chunks = []
-        try:
-            chunks = audio_service.chunk_audio_if_needed(audio_path)
-            result = transcription_service.transcribe_audio_chunks(chunks)
-            return result
-        finally:
-            to_delete = list(set([audio_path] + chunks))
-            audio_service.delete_audio_files(to_delete)
+        if input_type == 'audio':
+            audio_path = file_path
+            chunks = []
+            try:
+                chunks = audio_service.chunk_audio_if_needed(audio_path)
+                result = transcription_service.transcribe_audio_chunks(chunks)
+                return result
+            finally:
+                if chunks and chunks != [audio_path]:
+                    audio_service.delete_audio_files(chunks)
+        else:
+            audio_info = audio_service.extract_audio_from_video(file_path)
+            audio_path = audio_info['audio_path']
+            chunks = []
+            try:
+                chunks = audio_service.chunk_audio_if_needed(audio_path)
+                result = transcription_service.transcribe_audio_chunks(chunks)
+                return result
+            finally:
+                to_delete = list(set([audio_path] + chunks))
+                audio_service.delete_audio_files(to_delete)
     else:
-        raise TranscriptParseError(f"Unknown input type '{input_type}'. Must be 'video' or 'transcript'.")
+        raise TranscriptParseError(f"Unknown input type '{input_type}'. Must be 'video', 'audio', or 'transcript'.")

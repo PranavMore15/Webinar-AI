@@ -58,9 +58,15 @@ class ProcessingJob(db.Model):
     
     # Input metadata
     title = db.Column(db.String(255), nullable=True)
-    input_type = db.Column(db.String(20), nullable=False)  # 'video' or 'transcript'
+    input_type = db.Column(db.String(20), nullable=False)  # 'video', 'audio', or 'transcript'
     input_file_name = db.Column(db.String(255), nullable=False)
     input_file_path = db.Column(db.String(500), nullable=False)
+
+    # Automated Retrieval metadata (Prompt A6)
+    source_type = db.Column(db.String(50), default='manual', nullable=True)  # 'manual', 'direct', 'youtube', 'gdrive', 'local_file', 'local_folder'
+    source_url = db.Column(db.String(1000), nullable=True)
+    retrieval_status = db.Column(db.String(50), default='completed', nullable=True)  # 'pending', 'retrieving', 'completed', 'failed'
+    retrieval_error = db.Column(db.Text, nullable=True)
 
     # Stage statuses (discrete milestones)
     transcript_status = db.Column(db.String(50), default='pending', nullable=False)

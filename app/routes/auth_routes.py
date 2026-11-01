@@ -3,7 +3,9 @@ Authentication Routes for WebinarAI.
 Handles user registration, login, logout, and strict role separation.
 """
 
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session
+import os
+import secrets
+from flask import Blueprint, render_template, request, redirect, url_for, flash, session, current_app
 from app.models import db, User
 from app.utils.auth import validate_registration_data
 
@@ -165,3 +167,135 @@ def logout():
     session.clear()
     flash('You have been logged out successfully.', 'info')
     return redirect(url_for('auth.login'))
+
+
+# -----------------------------------------------------------------------------
+# Google Drive OAuth 2.0 Integration Routes (Prompt A4)
+# -----------------------------------------------------------------------------
+
+@auth_bp.route('/auth/gdrive/connect')
+def gdrive_connect():
+    """
+    Initiates Google Drive OAuth 2.0 authorization with read-only scope.
+    Generates CSRF state token and redirects to Google consent page.
+    """
+    if not session.get('user_id'):
+        flash('Please sign in to connect your Google account.', 'warning')
+        return redirect(url_for('auth.login'))
+
+    client_id = current_app.config.get('GOOGLE_CLIENT_ID') or os.environ.get('GOOGLE_CLIENT_ID')
+    client_secret = current_app.config.get('GOOGLE_CLIENT_SECRET') or os.environ.get('GOOGLE_CLIENT_SECRET')
+
+    if not client_id or not client_secret:
+        flash('Google Drive OAuth credentials (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) are not configured on the server.', 'warning')
+        return redirect(url_for('dashboard.index'))
+
+    # Generate CSRF state
+    state = secrets.token_urlsafe(32)
+    session['gdrive_oauth_state'] = state
+
+    redirect_uri = url_for('auth.gdrive_callback', _external=True)
+
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri]
+        }
+    }
+
+    try:
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_config(
+            client_config,
+            scopes=['https://www.googleapis.com/auth/drive.readonly'],
+            redirect_uri=redirect_uri,
+            state=state
+        )
+        authorization_url, _ = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        # Store PKCE code verifier in session for token exchange
+        code_verifier = getattr(flow, 'code_verifier', None)
+        if code_verifier and isinstance(code_verifier, str):
+            session['gdrive_code_verifier'] = code_verifier
+        return redirect(authorization_url)
+    except Exception as e:
+        flash(f'Failed to initiate Google OAuth: {str(e)}', 'danger')
+        return redirect(url_for('dashboard.index'))
+
+
+@auth_bp.route('/auth/gdrive/callback')
+def gdrive_callback():
+    """
+    Handles Google OAuth 2.0 callback redirect.
+    Verifies CSRF state, exchanges authorization code for credentials,
+    and stores token securely in user session.
+    """
+    if not session.get('user_id'):
+        flash('Please sign in to complete Google account connection.', 'warning')
+        return redirect(url_for('auth.login'))
+
+    # Verify CSRF state
+    state = request.args.get('state')
+    saved_state = session.get('gdrive_oauth_state')
+    if not state or state != saved_state:
+        flash('Invalid OAuth state. Potential CSRF detected. Connection aborted.', 'danger')
+        return redirect(url_for('dashboard.index'))
+
+    error = request.args.get('error')
+    if error:
+        flash(f'Google Drive authorization was denied: {error}', 'warning')
+        return redirect(url_for('dashboard.index'))
+
+    code = request.args.get('code')
+    if not code:
+        flash('No authorization code received from Google.', 'warning')
+        return redirect(url_for('dashboard.index'))
+
+    client_id = current_app.config.get('GOOGLE_CLIENT_ID') or os.environ.get('GOOGLE_CLIENT_ID')
+    client_secret = current_app.config.get('GOOGLE_CLIENT_SECRET') or os.environ.get('GOOGLE_CLIENT_SECRET')
+    redirect_uri = url_for('auth.gdrive_callback', _external=True)
+
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri]
+        }
+    }
+
+    try:
+        from google_auth_oauthlib.flow import Flow
+        flow = Flow.from_client_config(
+            client_config,
+            scopes=['https://www.googleapis.com/auth/drive.readonly'],
+            redirect_uri=redirect_uri,
+            state=state
+        )
+        code_verifier = session.pop('gdrive_code_verifier', None)
+        if code_verifier:
+            flow.code_verifier = code_verifier
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+
+        session['gdrive_token'] = {
+            'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret,
+            'scopes': credentials.scopes
+        }
+        session.pop('gdrive_oauth_state', None)
+        flash('Google Drive account connected successfully! You can now retrieve Drive recordings.', 'success')
+        return redirect(url_for('dashboard.index'))
+    except Exception as e:
+        flash(f'Failed to complete Google OAuth token exchange: {str(e)}', 'danger')
+        return redirect(url_for('dashboard.index'))

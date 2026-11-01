@@ -129,7 +129,7 @@ class TestPipelineAndStatus(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
 
     def test_active_job_statuses_api(self):
-        """GET /api/jobs/active-statuses returns array of recent jobs with progress metrics."""
+        """GET /api/jobs/active-statuses returns array of recent jobs with progress metrics and full metadata."""
         with self.client.session_transaction() as sess:
             sess['user_id'] = self.user.id
             sess['role'] = 'user'
@@ -141,7 +141,13 @@ class TestPipelineAndStatus(unittest.TestCase):
         self.assertTrue(data['success'])
         self.assertIsInstance(data['jobs'], list)
         self.assertEqual(len(data['jobs']), 1)
-        self.assertEqual(data['jobs'][0]['id'], self.job.id)
+        job_data = data['jobs'][0]
+        self.assertEqual(job_data['id'], self.job.id)
+        self.assertEqual(job_data['input_type'], self.job.input_type)
+        self.assertEqual(job_data['input_file_name'], self.job.input_file_name)
+        self.assertEqual(job_data['total_recipients'], self.job.total_recipients)
+        self.assertIn('created_at', job_data)
+        self.assertTrue(len(job_data['created_at']) > 0)
 
 
 if __name__ == '__main__':

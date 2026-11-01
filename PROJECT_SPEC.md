@@ -857,3 +857,91 @@ Prepare the implementation plan and next-day demonstration roadmap.
 **Do not execute Prompt 1 or any subsequent prompt. Do not build the application yet. Do not install dependencies. Do not modify database schemas.**
 
 Present the findings and next steps, then stop and wait for my explicit approval.
+
+
+---
+
+# PART N — EXTENSION: AUTOMATED WEBINAR VIDEO RETRIEVAL AND PROCESSING
+
+## 31. Extension overview & objectives
+
+WebinarAI is extended with an automated media retrieval system: **Automated Webinar Video Retrieval and Processing**.
+
+Authorized users are no longer required to manually download webinar recordings or transcripts and upload them to the application. Instead, the user provides a recording reference (URL or local selection), and WebinarAI validates accessibility, verifies content permissions, retrieves the media through permitted integrations, and feeds it into the existing summarization and knowledge-distribution pipeline:
+
+$$\text{Source Retrieval} \longrightarrow \text{Media Verification} \longrightarrow \text{FFmpeg Audio Extraction (if video)} \longrightarrow \text{Whisper Transcription} \longrightarrow \text{Gemini Summarization} \longrightarrow \text{ReportLab PDF} \longrightarrow \text{SMTP Distribution}$$
+
+All existing manual upload methods (MP4, TXT, VTT) and CSV email validation mechanisms remain fully supported and backward-compatible.
+
+## 32. Supported sources & interface design
+
+The dashboard Section A is extended into a unified **Webinar Content Source** panel providing 6 distinct input options:
+
+1. **Option 1: Direct Video/Audio Link**:
+   - Supports direct HTTP/HTTPS media URLs (MP4, MP3, WAV, M4A).
+   - Validates URL syntax and ensures destination does not target internal or prohibited networks.
+   - Enforces strict streaming limits and content container inspection.
+2. **Option 2: YouTube**:
+   - Recognizes standard YouTube watch URLs (`youtube.com/watch?v=...`), shortlinks (`youtu.be/...`), and Shorts (`youtube.com/shorts/...`).
+   - Queries official YouTube Data API v3 for metadata and permitted captions/transcripts.
+   - Strictly prohibits unauthorized downloading, scraping, `yt-dlp`, or DRM bypass.
+   - Routes permitted transcripts directly to summarization; reports limitations when automated retrieval is unavailable.
+3. **Option 3: Google Drive**:
+   - Accepts Google Drive sharing URLs and extracts file IDs safely.
+   - Implements official Google OAuth 2.0 flow with narrow `drive.readonly` scope.
+   - Streams permitted media via the official Google Drive API v3.
+   - Supports account disconnection and secure token storage.
+4. **Option 4: Local Computer Files**:
+   - Browser-native file picker allowing direct local media selection.
+   - Validates file format, size, and container header before server transfer.
+5. **Option 5: Local Computer Folders**:
+   - Browser-supported folder picker (`webkitdirectory` / File System Access API).
+   - Lists discovered supported media recordings and allows the user to choose the intended recording.
+   - Only transfers the explicitly selected file. Never browses arbitrary server-side paths.
+6. **Option 6: Existing Manual Upload**:
+   - Preserves manual upload controls for MP4 video, TXT transcript, and VTT transcript.
+
+### User interaction flow
+
+The interface provides two distinct stages of user action:
+- **Check Accessibility**: Performs non-destructive pre-flight checks (reachability, MIME type, file size, authorization requirements) and displays a clear status badge without initiating a full download or creating a job.
+- **Start Processing & Deliver Email**: User confirms content authorization and recipient list, initiating media retrieval, audio processing, summarization, PDF generation, and SMTP distribution.
+
+## 33. Security, SSRF defense & content rights
+
+1. **Server-Side Request Forgery (SSRF) Protection**:
+   - All outbound requests for direct media URLs pass through `app/utils/ssrf.py`.
+   - Rejects loopback (`127.0.0.0/8`), private networks (RFC 1918: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), and IPv6 equivalents.
+   - Blocks cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`).
+   - Validates DNS resolution before connection and re-validates targets on every HTTP redirect.
+   - Restricts protocols strictly to `http` and `https`, and restricts ports to 80 and 443.
+   - Streams downloads with chunk-level byte counting, aborting immediately if `MAX_VIDEO_SIZE` (250MB) is exceeded.
+2. **Authorization & Compliance**:
+   - The user must explicitly confirm authorization to retrieve, process, and distribute the webinar content.
+   - The platform strictly enforces zero bypass of paywalls, subscription barriers, login controls, or DRM protections.
+   - Sensitive OAuth tokens, client secrets, and internal system paths are masked in application logs and excluded from client responses.
+
+## 34. Database schema & job orchestration extension
+
+The `ProcessingJob` model in `app/models/schema.py` is extended with:
+- `source_type`: Mode of content ingestion (`direct_url`, `youtube`, `gdrive`, `local_file`, `local_folder`, `manual_upload`).
+- `source_url`: Safely masked remote source reference (excluding secrets or access tokens).
+- `retrieval_status`: Granular retrieval lifecycle (`pending`, `checking`, `retrieving`, `completed`, `failed`, `restricted`).
+- `retrieval_error`: Sanitized user-facing error message on retrieval failure.
+
+Downstream pipeline execution in `app/services/pipeline_service.py` is updated:
+- Audio-only files (MP3, WAV, M4A) bypass FFmpeg video extraction and route directly to Whisper.
+- Official YouTube captions bypass FFmpeg and Whisper entirely, routing directly to Gemini summarization.
+- Any retrieval failure terminates the job immediately, guaranteeing zero emails are sent.
+- Idempotency guards prevent duplicate jobs, repeated downloads, or redundant email delivery on page refresh.
+
+## 35. Staged implementation roadmap (Prompts A0–A7)
+
+- **Prompt A0: Feature Integration Assessment & Specification Update** *(Current Stage)*: Workspace inspection, codebase review, OpenSpec proposal/spec/design/tasks creation, `PROJECT_SPEC.md` and `PROJECT_STATUS.md` updates.
+- **Prompt A1: Dashboard Source Selection UI**: Extend dashboard Section A with the 6-option selector, Check Accessibility trigger, and status displays.
+- **Prompt A2: Direct Media Retrieval & SSRF Protection**: Implement `app/utils/ssrf.py`, `DirectMediaProvider`, streaming limits, and validation tests.
+- **Prompt A3: Local Computer File & Folder Selection**: Implement browser-native folder picking, media filtering, and file transfer.
+- **Prompt A4: Google Drive Official Integration**: Implement OAuth 2.0 flow, Google Drive API v3 client, metadata checking, and safe downloads.
+- **Prompt A5: YouTube Compliance & Official Caption Integration**: Implement YouTube URL validation, Data API v3 metadata inspection, caption ingestion, and non-bypass guardrails.
+- **Prompt A6: Retrieval & Processing Pipeline Integration**: Update `ProcessingJob` schema, update `pipeline_service.py` for audio-only and caption inputs, and connect automated handoff.
+- **Prompt A7: Comprehensive Testing, Security Verification & Documentation**: Execute 26-scenario verification matrix, verify 162 existing tests pass, and finalize documentation.

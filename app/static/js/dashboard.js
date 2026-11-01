@@ -8,7 +8,9 @@ document.addEventListener('DOMContentLoaded', function () {
         webinarUpload: null,        // Server-verified webinar metadata
         webinarFile: null,          // Client File object
         csvFile: null,              // Client CSV File object
-        csvData: null               // Server-verified CSV validation breakdown
+        csvData: null,              // Server-verified CSV validation breakdown
+        youtubeCaptionContent: null,
+        youtubeCaptionFilename: null
     };
 
     // Helper: Escape HTML to avoid XSS
@@ -46,6 +48,49 @@ document.addEventListener('DOMContentLoaded', function () {
     const webinarFileIcon = document.getElementById('webinarFileIcon');
     const btnRemoveWebinarFile = document.getElementById('btnRemoveWebinarFile');
     const webinarStatusBadge = document.getElementById('webinarStatusBadge');
+
+    // DOM Elements - Automated Webinar Source Modes & Accessibility (Prompt A1)
+    const contentSourceRadios = document.querySelectorAll('input[name="contentSourceMode"]');
+    const sourcePanels = {
+        manual: document.getElementById('panelSourceManual'),
+        direct: document.getElementById('panelSourceDirect'),
+        youtube: document.getElementById('panelSourceYouTube'),
+        gdrive: document.getElementById('panelSourceGDrive'),
+        local_file: document.getElementById('panelSourceLocalFile'),
+        local_folder: document.getElementById('panelSourceLocalFolder')
+    };
+    const directMediaUrlInput = document.getElementById('directMediaUrlInput');
+    const btnCheckDirectAccessibility = document.getElementById('btnCheckDirectAccessibility');
+    const youtubeUrlInput = document.getElementById('youtubeUrlInput');
+    const btnCheckYouTubeAccessibility = document.getElementById('btnCheckYouTubeAccessibility');
+    const youtubeCaptionFileInput = document.getElementById('youtubeCaptionFileInput');
+    const youtubeTranscriptText = document.getElementById('youtubeTranscriptText');
+    const youtubeTranscriptAttachedNotice = document.getElementById('youtubeTranscriptAttachedNotice');
+    const youtubeTranscriptAttachedLabel = document.getElementById('youtubeTranscriptAttachedLabel');
+    const btnClearYouTubeTranscript = document.getElementById('btnClearYouTubeTranscript');
+    const btnModalAttachTranscript = document.getElementById('btnModalAttachTranscript');
+    const btnModalSwitchManual = document.getElementById('btnModalSwitchManual');
+    const modalRecoveryActions = document.getElementById('modalRecoveryActions');
+    const gdriveUrlInput = document.getElementById('gdriveUrlInput');
+    const btnCheckGDriveAccessibility = document.getElementById('btnCheckGDriveAccessibility');
+    const btnConnectGDrive = document.getElementById('btnConnectGDrive');
+    const gdriveAuthBadge = document.getElementById('gdriveAuthBadge');
+    const localMediaFileInput = document.getElementById('localMediaFileInput');
+    const localFolderInput = document.getElementById('localFolderInput');
+    const folderCompatibilityNotice = document.getElementById('folderCompatibilityNotice');
+    const folderDiscoveredContainer = document.getElementById('folderDiscoveredContainer');
+    const folderFilesList = document.getElementById('folderFilesList');
+
+    // Accessibility Report Card Elements
+    const accessibilityReportCard = document.getElementById('accessibilityReportCard');
+    const accessSourceTypeBadge = document.getElementById('accessSourceTypeBadge');
+    const accessSourceTitle = document.getElementById('accessSourceTitle');
+    const accessStatusBadge = document.getElementById('accessStatusBadge');
+    const accessMediaType = document.getElementById('accessMediaType');
+    const accessFileSize = document.getElementById('accessFileSize');
+    const accessEligibility = document.getElementById('accessEligibility');
+    const accessExplanation = document.getElementById('accessExplanation');
+    const chkAuthorizationConfirmation = document.getElementById('chkAuthorizationConfirmation');
 
     // DOM Elements - Section B (CSV Upload & Manual Recipients)
     const csvFileInput = document.getElementById('csvFileInput');
@@ -124,6 +169,495 @@ document.addEventListener('DOMContentLoaded', function () {
     const stepIconEmail = document.getElementById('stepIconEmail');
     const modalCompletionActions = document.getElementById('modalCompletionActions');
     const btnModalDownloadPdf = document.getElementById('btnModalDownloadPdf');
+
+    // -------------------------------------------------------------------------
+    // 1A. Automated Content Source Mode Switching (Prompt A1)
+    // -------------------------------------------------------------------------
+    function switchContentSourceMode(mode) {
+        state.contentSourceMode = mode;
+        Object.keys(sourcePanels).forEach(key => {
+            if (sourcePanels[key]) {
+                if (key === mode) {
+                    sourcePanels[key].classList.remove('d-none');
+                } else {
+                    sourcePanels[key].classList.add('d-none');
+                }
+            }
+        });
+
+        hideWebinarError();
+
+        if (mode === 'manual') {
+            updateWebinarSourceView();
+        } else if (mode === 'youtube') {
+            if (youtubeUrlInput) {
+                setTimeout(() => youtubeUrlInput.focus(), 50);
+            }
+        } else if (mode === 'direct') {
+            if (directMediaUrlInput) {
+                setTimeout(() => directMediaUrlInput.focus(), 50);
+            }
+        } else if (mode === 'gdrive') {
+            if (gdriveUrlInput) {
+                setTimeout(() => gdriveUrlInput.focus(), 50);
+            }
+        } else if (mode === 'local_folder') {
+            checkFolderSupport();
+        }
+    }
+
+    contentSourceRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            if (e.target.checked) {
+                switchContentSourceMode(e.target.value);
+            }
+        });
+    });
+
+    const sourceLabels = document.querySelectorAll('#sourceSelectorGrid label');
+    sourceLabels.forEach(label => {
+        label.addEventListener('click', () => {
+            const forId = label.getAttribute('for');
+            if (forId) {
+                const radio = document.getElementById(forId);
+                if (radio && !radio.checked) {
+                    radio.checked = true;
+                    switchContentSourceMode(radio.value);
+                }
+            }
+        });
+    });
+
+    function checkFolderSupport() {
+        const input = document.createElement('input');
+        const isSupported = ('webkitdirectory' in input || 'directory' in input);
+        if (!isSupported && folderCompatibilityNotice) {
+            folderCompatibilityNotice.classList.remove('d-none');
+        } else if (folderCompatibilityNotice) {
+            folderCompatibilityNotice.classList.add('d-none');
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 1B. Check Accessibility Execution (Prompt A1)
+    // -------------------------------------------------------------------------
+    async function checkAccessibility(sourceType, sourceUrl, filename = '', fileSize = '') {
+        hideWebinarError();
+        if (webinarLoadingSpinner) {
+            const loadingText = document.getElementById('webinarLoadingText');
+            if (loadingText) loadingText.textContent = 'Checking Source Accessibility...';
+            webinarLoadingSpinner.classList.remove('d-none');
+        }
+        if (webinarStatusBadge) {
+            webinarStatusBadge.className = 'badge bg-warning-subtle text-warning-emphasis rounded-pill px-3 py-1';
+            webinarStatusBadge.innerHTML = `<i class="bi bi-hourglass-split me-1"></i> Checking Source...`;
+        }
+
+        try {
+            const checkPayload = {
+                source_type: sourceType,
+                source_url: sourceUrl,
+                filename: filename,
+                file_size: fileSize
+            };
+            if (sourceType === 'youtube' && state.youtubeCaptionContent) {
+                checkPayload.caption_content = state.youtubeCaptionContent;
+            }
+
+            const response = await fetch('/api/sources/check-accessibility', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(checkPayload)
+            });
+
+            const result = await response.json();
+            if (webinarLoadingSpinner) webinarLoadingSpinner.classList.add('d-none');
+
+            if (!response.ok || !result.success) {
+                showWebinarError(result.accessibility_status || 'Accessibility Check Failed', result.message || 'Unable to access the specified source.');
+                if (accessibilityReportCard) accessibilityReportCard.classList.add('d-none');
+                if (webinarStatusBadge) {
+                    webinarStatusBadge.className = 'badge bg-danger-subtle text-danger rounded-pill px-3 py-1';
+                    webinarStatusBadge.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> ${escapeHtml(result.accessibility_status || 'Check Failed')}`;
+                }
+                state.accessibilityReport = null;
+                updatePrerequisites();
+                return;
+            }
+
+            // Render accessibility report card
+            state.accessibilityReport = result;
+            renderAccessibilitySuccess(result);
+
+            // Stage source for workflow continuation
+            const candidateName = filename || (sourceUrl ? sourceUrl.split('/').pop().split('?')[0] : `${result.source_type}_recording`);
+            const isTranscriptType = (result.source_type === 'youtube' && (result.accessibility_status === 'Transcript Attached' || Boolean(state.youtubeCaptionContent))) || (result.media_type && result.media_type.toLowerCase().includes('transcript'));
+            state.webinarUpload = {
+                source_type: result.source_type,
+                input_type: isTranscriptType ? 'transcript' : ((result.media_type && result.media_type.includes('audio')) ? 'audio' : 'video'),
+                original_filename: (result.source_type === 'youtube' && state.youtubeCaptionFilename) ? state.youtubeCaptionFilename : (candidateName || `${result.source_type}_media`),
+                safe_filename: `${result.source_type}_staged`,
+                file_size: typeof fileSize === 'number' ? fileSize : (state.youtubeCaptionContent ? state.youtubeCaptionContent.length : 0),
+                file_extension: isTranscriptType ? 'vtt' : (candidateName && candidateName.includes('.') ? candidateName.split('.').pop() : 'mp4'),
+                source_url: sourceUrl,
+                is_remote: ['direct', 'youtube', 'gdrive'].includes(result.source_type),
+                caption_content: result.source_type === 'youtube' ? state.youtubeCaptionContent : null
+            };
+
+            if (webinarStatusBadge) {
+                webinarStatusBadge.className = 'badge bg-success-subtle text-success rounded-pill px-3 py-1';
+                webinarStatusBadge.innerHTML = `<i class="bi bi-check-circle-fill me-1"></i> ${escapeHtml(result.accessibility_status)}`;
+            }
+
+            updatePrerequisites();
+
+        } catch (err) {
+            if (webinarLoadingSpinner) webinarLoadingSpinner.classList.add('d-none');
+            showWebinarError('Network Error', 'Failed to perform accessibility check: ' + err.message);
+            if (webinarStatusBadge) {
+                webinarStatusBadge.className = 'badge bg-danger-subtle text-danger rounded-pill px-3 py-1';
+                webinarStatusBadge.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1"></i> Check Error`;
+            }
+            state.accessibilityReport = null;
+            updatePrerequisites();
+        }
+    }
+
+    function renderAccessibilitySuccess(result) {
+        if (!accessibilityReportCard) return;
+        const typeLabels = {
+            direct: 'Direct Link',
+            youtube: 'YouTube',
+            gdrive: 'Google Drive',
+            local_file: 'Local File',
+            local_folder: 'Local Folder'
+        };
+        if (accessSourceTypeBadge) accessSourceTypeBadge.textContent = typeLabels[result.source_type] || result.source_type;
+        if (accessSourceTitle) accessSourceTitle.textContent = result.source_reference || 'Configured Source';
+
+        let statusBadgeClass = 'bg-success-subtle text-success border border-success-subtle';
+        if (result.accessibility_status === 'Authentication Required') {
+            statusBadgeClass = 'bg-warning-subtle text-warning-emphasis border border-warning-subtle';
+        } else if (result.accessibility_status && result.accessibility_status.toLowerCase().includes('restricted')) {
+            statusBadgeClass = 'bg-danger-subtle text-danger border border-danger-subtle';
+        }
+
+        if (accessStatusBadge) {
+            accessStatusBadge.className = `badge rounded-pill px-2.5 py-1 small ${statusBadgeClass}`;
+            accessStatusBadge.textContent = result.accessibility_status || 'Verified';
+        }
+        if (accessMediaType) accessMediaType.textContent = result.media_type || 'Unknown';
+        if (accessFileSize) accessFileSize.textContent = result.file_size || 'Pending download';
+        if (accessEligibility) {
+            accessEligibility.textContent = result.retrieval_eligible ? 'Eligible for Retrieval' : 'Restricted';
+            accessEligibility.className = result.retrieval_eligible ? 'text-success fw-semibold' : 'text-danger fw-semibold';
+        }
+        if (accessExplanation) accessExplanation.textContent = result.explanation || 'Source verified and ready.';
+
+        accessibilityReportCard.classList.remove('d-none');
+    }
+
+    // Attach Check Accessibility event handlers
+    if (btnCheckDirectAccessibility && directMediaUrlInput) {
+        btnCheckDirectAccessibility.addEventListener('click', () => {
+            const url = directMediaUrlInput.value.trim();
+            if (!url) {
+                showWebinarError('Missing URL', 'Please enter a direct video or audio URL.');
+                return;
+            }
+            checkAccessibility('direct', url);
+        });
+    }
+
+    if (btnCheckYouTubeAccessibility && youtubeUrlInput) {
+        btnCheckYouTubeAccessibility.addEventListener('click', () => {
+            const url = youtubeUrlInput.value.trim();
+            if (!url) {
+                showWebinarError('Missing URL', 'Please enter a YouTube video URL.');
+                return;
+            }
+            checkAccessibility('youtube', url);
+        });
+    }
+
+    function showYouTubeTranscriptNotice(label) {
+        if (youtubeTranscriptAttachedNotice && youtubeTranscriptAttachedLabel) {
+            youtubeTranscriptAttachedLabel.textContent = `Transcript attached (${label}):`;
+            youtubeTranscriptAttachedNotice.classList.remove('d-none');
+            youtubeTranscriptAttachedNotice.classList.add('d-flex');
+        }
+        if (webinarStatusBadge) {
+            webinarStatusBadge.className = 'badge bg-success-subtle text-success rounded-pill px-3 py-1';
+            webinarStatusBadge.innerHTML = `<i class="bi bi-file-earmark-check-fill me-1"></i> Transcript Attached`;
+        }
+        if (youtubeUrlInput && youtubeUrlInput.value.trim()) {
+            const url = youtubeUrlInput.value.trim();
+            const candidateName = state.youtubeCaptionFilename || `youtube_${url.split('/').pop().split('?')[0]}_captions.vtt`;
+            state.webinarUpload = {
+                source_type: 'youtube',
+                input_type: 'transcript',
+                original_filename: candidateName,
+                safe_filename: `youtube_transcript_staged`,
+                file_size: state.youtubeCaptionContent ? state.youtubeCaptionContent.length : 0,
+                file_extension: 'vtt',
+                source_url: url,
+                is_remote: true,
+                caption_content: state.youtubeCaptionContent
+            };
+            renderAccessibilitySuccess({
+                source_type: 'youtube',
+                source_reference: url,
+                accessibility_status: 'Transcript Attached',
+                media_type: 'YouTube Video (User-Provided Transcript)',
+                file_size: `${Math.round(((state.youtubeCaptionContent ? state.youtubeCaptionContent.length : 0) / 1024) * 10) / 10} KB (Text Stream)`,
+                retrieval_eligible: true,
+                explanation: 'YouTube video configured with accompanying transcript for processing.'
+            });
+            hideWebinarError();
+            updatePrerequisites();
+        }
+    }
+
+    function clearYouTubeTranscript() {
+        state.youtubeCaptionContent = null;
+        state.youtubeCaptionFilename = null;
+        if (youtubeCaptionFileInput) youtubeCaptionFileInput.value = '';
+        if (youtubeTranscriptText) youtubeTranscriptText.value = '';
+        if (youtubeTranscriptAttachedNotice) {
+            youtubeTranscriptAttachedNotice.classList.add('d-none');
+            youtubeTranscriptAttachedNotice.classList.remove('d-flex');
+        }
+        if (state.webinarUpload && state.webinarUpload.source_type === 'youtube') {
+            state.webinarUpload = null;
+            if (webinarStatusBadge) {
+                webinarStatusBadge.className = 'badge text-bg-light border text-secondary';
+                webinarStatusBadge.innerHTML = `<i class="bi bi-circle me-1"></i> Source Pending`;
+            }
+            if (accessibilityReportCard) accessibilityReportCard.classList.add('d-none');
+        }
+        updatePrerequisites();
+    }
+
+    if (youtubeCaptionFileInput) {
+        youtubeCaptionFileInput.addEventListener('change', () => {
+            const file = youtubeCaptionFileInput.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                state.youtubeCaptionContent = e.target.result;
+                state.youtubeCaptionFilename = file.name;
+                showYouTubeTranscriptNotice(file.name);
+            };
+            reader.readAsText(file);
+        });
+    }
+
+    if (youtubeTranscriptText) {
+        youtubeTranscriptText.addEventListener('input', () => {
+            const text = youtubeTranscriptText.value.trim();
+            if (text) {
+                state.youtubeCaptionContent = text;
+                state.youtubeCaptionFilename = 'pasted_transcript.vtt';
+                showYouTubeTranscriptNotice('Pasted text');
+            } else if (!youtubeCaptionFileInput || !youtubeCaptionFileInput.files.length) {
+                clearYouTubeTranscript();
+            }
+        });
+    }
+
+    if (btnClearYouTubeTranscript) {
+        btnClearYouTubeTranscript.addEventListener('click', () => {
+            clearYouTubeTranscript();
+        });
+    }
+
+    if (btnModalAttachTranscript) {
+        btnModalAttachTranscript.addEventListener('click', () => {
+            triggerConfirmModal.hide();
+            const ytRadio = document.querySelector('input[name="contentSourceMode"][value="youtube"]');
+            if (ytRadio) ytRadio.click();
+            if (youtubeTranscriptText) {
+                setTimeout(() => {
+                    youtubeTranscriptText.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    youtubeTranscriptText.focus();
+                }, 250);
+            }
+        });
+    }
+
+    if (btnModalSwitchManual) {
+        btnModalSwitchManual.addEventListener('click', () => {
+            triggerConfirmModal.hide();
+            const manualRadio = document.querySelector('input[name="contentSourceMode"][value="manual"]');
+            if (manualRadio) manualRadio.click();
+            const manualPanel = document.getElementById('panelSourceManual');
+            if (manualPanel) {
+                setTimeout(() => {
+                    manualPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 250);
+            }
+        });
+    }
+
+    if (btnCheckGDriveAccessibility && gdriveUrlInput) {
+        btnCheckGDriveAccessibility.addEventListener('click', () => {
+            const url = gdriveUrlInput.value.trim();
+            if (!url) {
+                showWebinarError('Missing URL', 'Please enter a Google Drive file link.');
+                return;
+            }
+            checkAccessibility('gdrive', url);
+        });
+    }
+
+    async function checkGDriveStatus() {
+        if (!gdriveAuthBadge || !btnConnectGDrive) return;
+        try {
+            const resp = await fetch('/api/sources/gdrive/status');
+            const data = await resp.json();
+            if (data.connected) {
+                gdriveAuthBadge.className = 'badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2 py-1 small';
+                gdriveAuthBadge.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Connected';
+                btnConnectGDrive.className = 'btn btn-outline-danger btn-sm rounded-pill px-3';
+                btnConnectGDrive.innerHTML = '<i class="bi bi-box-arrow-right me-1"></i> Disconnect Account';
+            } else {
+                gdriveAuthBadge.className = 'badge bg-secondary-subtle text-secondary border rounded-pill px-2 py-1 small';
+                gdriveAuthBadge.innerHTML = '<i class="bi bi-lock me-1"></i> Not Connected';
+                btnConnectGDrive.className = 'btn btn-outline-secondary btn-sm rounded-pill px-3';
+                btnConnectGDrive.innerHTML = '<i class="bi bi-box-arrow-in-right me-1"></i> Connect Google Account';
+            }
+        } catch (e) {
+            console.error('Failed to check Google Drive status:', e);
+        }
+    }
+
+    if (btnConnectGDrive) {
+        btnConnectGDrive.addEventListener('click', async () => {
+            const resp = await fetch('/api/sources/gdrive/status');
+            const data = await resp.json();
+            if (data.connected) {
+                if (confirm('Disconnect your Google account from WebinarAI?')) {
+                    await fetch('/api/sources/gdrive/disconnect', { method: 'POST' });
+                    checkGDriveStatus();
+                }
+            } else {
+                window.location.href = '/auth/gdrive/connect';
+            }
+        });
+        checkGDriveStatus();
+    }
+
+    async function handleLocalMediaUpload(file, sourceType = 'local_file') {
+        if (!file) return;
+
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (!['mp4', 'mp3', 'wav', 'm4a'].includes(ext)) {
+            showWebinarError('Invalid Media Extension', `Selected file '.${ext}' is not supported. Please select an MP4, MP3, WAV, or M4A file.`);
+            return;
+        }
+
+        // Show uploading state
+        hideWebinarError();
+        if (webinarFileDetails) webinarFileDetails.classList.add('d-none');
+        if (webinarLoadingSpinner) {
+            const loadingText = document.getElementById('webinarLoadingText');
+            if (loadingText) loadingText.textContent = `Uploading & Verifying Local ${ext.toUpperCase()}...`;
+            webinarLoadingSpinner.classList.remove('d-none');
+        }
+        if (webinarStatusBadge) {
+            webinarStatusBadge.className = 'badge bg-warning-subtle text-warning-emphasis rounded-pill px-3 py-1';
+            webinarStatusBadge.innerHTML = `<i class="bi bi-hourglass-split me-1"></i> Uploading & Verifying...`;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('source_type', sourceType);
+
+        try {
+            const response = await fetch('/api/sources/local/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await response.json();
+            if (webinarLoadingSpinner) webinarLoadingSpinner.classList.add('d-none');
+
+            if (!response.ok || !result.success) {
+                showWebinarError('Local Upload Rejected', result.message || 'Media validation failed on server.');
+                clearWebinarClientState();
+                if (webinarStatusBadge) {
+                    webinarStatusBadge.className = 'badge bg-danger-subtle text-danger rounded-pill px-3 py-1';
+                    webinarStatusBadge.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> Upload Rejected`;
+                }
+                updatePrerequisites();
+                return;
+            }
+
+            // Success
+            state.webinarUpload = result.details;
+            state.webinarFile = file;
+
+            renderWebinarUploadSuccess(result.details);
+            updatePrerequisites();
+        } catch (error) {
+            if (webinarLoadingSpinner) webinarLoadingSpinner.classList.add('d-none');
+            showWebinarError('Local Upload Error', 'An error occurred during local media transfer: ' + error.message);
+            clearWebinarClientState();
+            updatePrerequisites();
+        }
+    }
+
+    if (localMediaFileInput) {
+        localMediaFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                const file = e.target.files[0];
+                checkAccessibility('local_file', '', file.name, formatBytes(file.size));
+                handleLocalMediaUpload(file, 'local_file');
+            }
+        });
+    }
+
+    if (localFolderInput) {
+        localFolderInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                const files = Array.from(e.target.files);
+                const mediaFiles = files.filter(f => {
+                    const ext = (f.name.split('.').pop() || '').toLowerCase();
+                    return ['mp4', 'mp3', 'wav', 'm4a'].includes(ext);
+                });
+
+                if (mediaFiles.length === 0) {
+                    showWebinarError('No Media Found', 'No supported media files (.mp4, .mp3, .wav, .m4a) were found in the selected folder.');
+                    if (folderDiscoveredContainer) folderDiscoveredContainer.classList.add('d-none');
+                    return;
+                }
+
+                if (folderFilesList && folderDiscoveredContainer) {
+                    folderFilesList.innerHTML = '';
+                    mediaFiles.forEach((file) => {
+                        const item = document.createElement('button');
+                        item.type = 'button';
+                        item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-2 px-3 border rounded-2 mb-1';
+                        item.innerHTML = `
+                            <div class="d-flex align-items-center gap-2 overflow-hidden">
+                                <i class="bi ${file.name.endsWith('.mp4') ? 'bi-camera-video-fill text-primary' : 'bi-music-note-beamed text-info'}"></i>
+                                <span class="text-truncate fw-medium">${escapeHtml(file.name)}</span>
+                            </div>
+                            <span class="badge text-bg-light border ms-2">${formatBytes(file.size)}</span>
+                        `;
+                        item.addEventListener('click', () => {
+                            Array.from(folderFilesList.children).forEach(c => c.classList.remove('active', 'border-primary'));
+                            item.classList.add('active', 'border-primary');
+                            checkAccessibility('local_folder', '', file.name, formatBytes(file.size));
+                            handleLocalMediaUpload(file, 'local_folder');
+                        });
+                        folderFilesList.appendChild(item);
+                    });
+                    folderDiscoveredContainer.classList.remove('d-none');
+                }
+            }
+        });
+    }
 
     // -------------------------------------------------------------------------
     // 1. Mutually Exclusive Webinar Input Switch
@@ -675,6 +1209,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // Reset modal states
         modalJobSuccessAlert.classList.add('d-none');
         modalJobErrorAlert.classList.add('d-none');
+        if (modalRecoveryActions) modalRecoveryActions.classList.add('d-none');
         modalSubmissionExplainer.classList.remove('d-none');
         modalProcessingProgress.classList.add('d-none');
         modalCompletionActions.classList.add('d-none');
@@ -802,6 +1337,120 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    function renderJobRowHtml(job) {
+        if (!job || !job.id) return '';
+        const inputTypeBadge = (job.input_type === 'video')
+            ? '<span class="badge bg-primary-subtle text-primary"><i class="bi bi-camera-video-fill me-1"></i>Video (MP4)</span>'
+            : '<span class="badge bg-info-subtle text-info-emphasis"><i class="bi bi-file-earmark-text-fill me-1"></i>Transcript</span>';
+
+        const safeFileName = escapeHtml(job.input_file_name || 'Webinar Recording');
+        const recipientsCount = Number(job.total_recipients || 0);
+        const recipientSuffix = recipientsCount !== 1 ? 's' : '';
+        const createdAt = escapeHtml(job.created_at || new Date().toISOString().replace('T', ' ').substring(0, 19));
+
+        const statusLabel = (job.overall_status || 'ready').replace('_', ' ');
+        const capStatus = statusLabel.charAt(0).toUpperCase() + statusLabel.slice(1);
+        let statusHtml = '';
+        if (job.overall_status === 'completed') {
+            statusHtml = '<span class="badge bg-success-subtle text-success border border-success-subtle"><i class="bi bi-check2-circle me-1"></i>Completed</span>';
+        } else if (['ready', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing'].includes(job.overall_status)) {
+            statusHtml = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle"><span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>${escapeHtml(capStatus)}</span>`;
+        } else if (job.overall_status === 'partially_sent') {
+            statusHtml = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle"><i class="bi bi-exclamation-circle-fill me-1"></i>Partial</span>';
+        } else if (job.overall_status === 'failed') {
+            statusHtml = `<span class="badge bg-danger-subtle text-danger border border-danger-subtle" title="${escapeHtml(job.error_message || 'Processing Failed')}"><i class="bi bi-x-circle-fill me-1"></i>Failed</span>`;
+        } else {
+            statusHtml = `<span class="badge bg-secondary-subtle text-secondary border"><i class="bi bi-hourglass-split me-1"></i>${escapeHtml(capStatus)}</span>`;
+        }
+
+        let pdfHtml = '<span class="badge bg-light text-muted border rounded-pill px-2 py-1"><i class="bi bi-hourglass me-1"></i> Pending</span>';
+        if (job.pdf_ready || (job.pdf_status === 'completed' && job.pdf_path)) {
+            pdfHtml = `<a href="/dashboard/jobs/${job.id}/download-pdf" class="btn btn-sm btn-outline-primary rounded-pill px-2.5 py-1 fw-semibold d-inline-flex align-items-center gap-1 shadow-xs" title="Download AI-Generated Summary PDF"><i class="bi bi-file-earmark-pdf-fill text-danger"></i><span>Download</span></a>`;
+        } else if (job.summary_status === 'completed') {
+            pdfHtml = `<a href="/dashboard/jobs/${job.id}/download-pdf" class="btn btn-sm btn-outline-success rounded-pill px-2.5 py-1 small fw-semibold d-inline-flex align-items-center gap-1" title="Generate and Download PDF"><i class="bi bi-file-earmark-arrow-down-fill text-success"></i><span>Get PDF</span></a>`;
+        } else if (job.pdf_status === 'generating') {
+            pdfHtml = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-1"><span class="spinner-border spinner-border-sm me-1" style="width: 0.75rem; height: 0.75rem;"></span> Generating</span>';
+        } else if (job.pdf_status === 'failed') {
+            pdfHtml = `<span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="${escapeHtml(job.error_message || 'PDF Generation Failed')}"><i class="bi bi-exclamation-triangle-fill me-1"></i> Failed</span>`;
+        }
+
+        let emailHtml = '<span class="badge bg-light text-muted border rounded-pill px-2 py-1" title="Awaiting PDF summary generation"><i class="bi bi-hourglass me-1"></i>Awaiting PDF</span>';
+        if (job.email_status === 'completed') {
+            emailHtml = `<div class="d-inline-flex align-items-center gap-1"><span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2 py-1" title="All emails sent successfully"><i class="bi bi-envelope-check-fill me-1"></i>Sent (${job.successful_emails || 0})</span><button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal(${job.id})" title="View Delivery Audit Report"><i class="bi bi-file-text"></i></button></div>`;
+        } else if (job.email_status === 'partially_sent') {
+            emailHtml = `<div class="d-inline-flex align-items-center gap-1"><span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-1" title="Partially sent"><i class="bi bi-exclamation-circle-fill me-1"></i>Partial (${job.successful_emails || 0}/${recipientsCount})</span><button type="button" class="btn btn-sm btn-outline-warning rounded-pill px-2 py-0.5 small fw-semibold" onclick="openEmailPreFlightModal(${job.id}, true)" title="Retry Failed Deliveries"><i class="bi bi-arrow-repeat me-1"></i>Retry</button><button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal(${job.id})" title="View Delivery Report"><i class="bi bi-file-text"></i></button></div>`;
+        } else if (job.email_status === 'sending') {
+            emailHtml = '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-2 py-1"><span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span> Sending...</span>';
+        } else if (job.email_status === 'failed') {
+            emailHtml = `<div class="d-inline-flex align-items-center gap-1"><span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="Delivery failed"><i class="bi bi-x-circle-fill me-1"></i>Failed</span><button type="button" class="btn btn-sm btn-outline-danger rounded-pill px-2 py-0.5 small fw-semibold" onclick="openEmailPreFlightModal(${job.id}, true)" title="Retry Sending"><i class="bi bi-arrow-repeat me-1"></i>Retry</button><button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal(${job.id})" title="View Error Report"><i class="bi bi-file-text"></i></button></div>`;
+        } else if (job.pdf_ready || (job.pdf_status === 'completed' && job.pdf_path)) {
+            emailHtml = `<button type="button" class="btn btn-sm btn-primary rounded-pill px-2.5 py-1 fw-semibold d-inline-flex align-items-center gap-1 shadow-xs" onclick="openEmailPreFlightModal(${job.id}, false)" title="Send Summary PDF to Validated Recipients"><i class="bi bi-send-fill text-white"></i><span>Send Emails</span></button>`;
+        }
+
+        return `
+            <tr id="job-row-${job.id}" data-job-id="${job.id}">
+                <td><span class="badge text-bg-light border font-monospace fw-bold">#${job.id}</span></td>
+                <td>${inputTypeBadge}</td>
+                <td class="fw-semibold text-truncate" style="max-width: 200px;" title="${safeFileName}">
+                    ${safeFileName}
+                </td>
+                <td>
+                    <span class="badge bg-secondary-subtle text-secondary" id="job-recipients-cell-${job.id}">
+                        <i class="bi bi-people-fill me-1"></i>${recipientsCount} recipient${recipientSuffix}
+                    </span>
+                </td>
+                <td id="job-status-cell-${job.id}">
+                    ${statusHtml}
+                </td>
+                <td class="text-muted small">
+                    ${createdAt}
+                </td>
+                <td id="job-pdf-cell-${job.id}">
+                    ${pdfHtml}
+                </td>
+                <td id="job-email-cell-${job.id}" class="text-end pe-3">
+                    ${emailHtml}
+                </td>
+            </tr>
+        `.trim();
+    }
+
+    function prependJobToTable(job) {
+        if (!job || !job.id) return;
+        if (document.getElementById(`job-row-${job.id}`)) {
+            updateJobTableRowFromData(job);
+            return;
+        }
+
+        const emptyState = document.getElementById('jobEmptyState');
+        const jobsContainer = document.getElementById('recentJobsContainer');
+        const guideToggle = document.getElementById('lifecycleDemoToggleContainer');
+        if (emptyState) emptyState.classList.add('d-none');
+        if (jobsContainer) jobsContainer.classList.remove('d-none');
+        if (guideToggle) guideToggle.classList.remove('d-none');
+
+        let tbody = document.getElementById('recentJobsTableBody');
+        if (!tbody && jobsContainer) {
+            tbody = jobsContainer.querySelector('tbody');
+        }
+
+        if (tbody) {
+            const tempDiv = document.createElement('tbody');
+            tempDiv.innerHTML = renderJobRowHtml(job);
+            if (tempDiv.firstElementChild) {
+                tbody.insertBefore(tempDiv.firstElementChild, tbody.firstElementChild);
+            }
+        }
+
+        const countBadge = document.getElementById('recentJobsCountBadge');
+        if (countBadge && tbody) {
+            const count = tbody.querySelectorAll('tr').length;
+            countBadge.textContent = `${count} Job${count !== 1 ? 's' : ''}`;
+        }
+
+        updateJobTableRowFromData(job);
+    }
+
     function pollJobPipelineStatus(jobId) {
         if (activePollInterval) clearInterval(activePollInterval);
 
@@ -909,6 +1558,102 @@ document.addEventListener('DOMContentLoaded', function () {
         btnCloseModal.disabled = true;
         btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Starting Automated Pipeline...`;
 
+        // Handle remote direct media retrieval before submitting job (Prompt A2)
+        if (state.webinarUpload && state.webinarUpload.source_type === 'direct' && state.webinarUpload.is_remote) {
+            btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Retrieving Media from Remote URL...`;
+            try {
+                const retResp = await fetch('/api/sources/direct/retrieve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: state.webinarUpload.source_url })
+                });
+                const retData = await retResp.json();
+                if (!retResp.ok || !retData.success) {
+                    btnConfirmSubmitJob.disabled = false;
+                    btnCloseModal.disabled = false;
+                    btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                    modalJobErrorAlert.classList.remove('d-none');
+                    modalErrorTitle.textContent = 'Direct Media Retrieval Failed';
+                    modalErrorMessage.textContent = retData.message || 'Failed to retrieve media file from the provided URL.';
+                    return;
+                }
+                state.webinarUpload.is_remote = false;
+                state.webinarUpload.storage_path = retData.details.storage_path;
+            } catch (err) {
+                btnConfirmSubmitJob.disabled = false;
+                btnCloseModal.disabled = false;
+                btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                modalJobErrorAlert.classList.remove('d-none');
+                modalErrorTitle.textContent = 'Network Retrieval Error';
+                modalErrorMessage.textContent = err.message || 'Network error streaming remote media.';
+                return;
+            }
+        } else if (state.webinarUpload && state.webinarUpload.source_type === 'gdrive' && state.webinarUpload.is_remote) {
+            btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Retrieving Media from Google Drive...`;
+            try {
+                const retResp = await fetch('/api/sources/gdrive/retrieve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: state.webinarUpload.source_url })
+                });
+                const retData = await retResp.json();
+                if (!retResp.ok || !retData.success) {
+                    btnConfirmSubmitJob.disabled = false;
+                    btnCloseModal.disabled = false;
+                    btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                    modalJobErrorAlert.classList.remove('d-none');
+                    modalErrorTitle.textContent = 'Google Drive Retrieval Failed';
+                    modalErrorMessage.textContent = retData.message || 'Failed to download recording from Google Drive.';
+                    return;
+                }
+                state.webinarUpload.is_remote = false;
+                state.webinarUpload.storage_path = retData.details.storage_path;
+            } catch (err) {
+                btnConfirmSubmitJob.disabled = false;
+                btnCloseModal.disabled = false;
+                btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                modalJobErrorAlert.classList.remove('d-none');
+                modalErrorTitle.textContent = 'Network Retrieval Error';
+                modalErrorMessage.textContent = err.message || 'Network error streaming Google Drive media.';
+                return;
+            }
+        } else if (state.webinarUpload && state.webinarUpload.source_type === 'youtube' && state.webinarUpload.is_remote) {
+            btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Retrieving Official Captions from YouTube...`;
+            try {
+                const retResp = await fetch('/api/sources/youtube/retrieve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: state.webinarUpload.source_url,
+                        caption_content: state.webinarUpload.caption_content || state.youtubeCaptionContent
+                    })
+                });
+                const retData = await retResp.json();
+                if (!retResp.ok || !retData.success) {
+                    btnConfirmSubmitJob.disabled = false;
+                    btnCloseModal.disabled = false;
+                    btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                    modalJobErrorAlert.classList.remove('d-none');
+                    modalErrorTitle.textContent = 'YouTube Retrieval Restricted';
+                    modalErrorMessage.textContent = retData.message || 'Automated video downloading from YouTube is prohibited. No official captions available. Please upload the recording or transcript manually.';
+                    if (modalRecoveryActions) {
+                        modalRecoveryActions.classList.remove('d-none');
+                    }
+                    return;
+                }
+                state.webinarUpload.is_remote = false;
+                state.webinarUpload.storage_path = retData.details.storage_path;
+            } catch (err) {
+                btnConfirmSubmitJob.disabled = false;
+                btnCloseModal.disabled = false;
+                btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                modalJobErrorAlert.classList.remove('d-none');
+                modalErrorTitle.textContent = 'Network Retrieval Error';
+                modalErrorMessage.textContent = err.message || 'Network error retrieving YouTube captions.';
+                return;
+            }
+        }
+
         try {
             const response = await fetch('/api/submit-job', {
                 method: 'POST',
@@ -928,6 +1673,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 clearWebinarClientState();
                 clearCsvClientState();
                 updatePrerequisites();
+
+                // Immediately prepend newly created job into Registered Processing Jobs table
+                if (result.job) {
+                    prependJobToTable(result.job);
+                }
 
                 // Show live progress card inside the modal!
                 modalProcessingProgress.classList.remove('d-none');
@@ -963,7 +1713,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (!data.success || !data.jobs) return;
 
                 data.jobs.forEach(job => {
-                    updateJobTableRowFromData(job);
+                    const row = document.getElementById(`job-row-${job.id}`);
+                    if (!row) {
+                        prependJobToTable(job);
+                    } else {
+                        updateJobTableRowFromData(job);
+                    }
                 });
             } catch (err) {
                 // Background poll failure is silent
