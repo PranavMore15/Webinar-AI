@@ -486,11 +486,37 @@ class YouTubeProvider(BaseRetrievalProvider):
         # Subtitle extraction takes ~1 second and skips heavy CPU Whisper transcription entirely.
         prefer_audio_stream = bool(opts.get('force_audio', False))
         if not prefer_audio_stream:
+            # Query video metadata first to identify existing native/uploaded subtitle tracks
+            meta = self.get_metadata(source_reference, options=opts)
+            meta_info = meta.get('info', {}) if meta.get('success') else {}
+            subs = meta_info.get('subtitles') or {}
+            auto_caps = meta_info.get('automatic_captions') or {}
+
+            # Target only valid tracks to avoid YouTube's 429 translation rate limit:
+            target_langs = []
+            for l in ('en', 'en-US', 'en-GB'):
+                if l in subs:
+                    target_langs.append(l)
+                    break
+            if not target_langs and subs:
+                target_langs.append(list(subs.keys())[0])
+            if not target_langs and auto_caps:
+                orig_tracks = [k for k in auto_caps.keys() if k.endswith('-orig')]
+                if orig_tracks:
+                    target_langs.append(orig_tracks[0])
+                elif 'en' in auto_caps:
+                    target_langs.append('en')
+                elif list(auto_caps.keys()):
+                    target_langs.append(list(auto_caps.keys())[0])
+
+            if not target_langs:
+                target_langs = ['en', 'en-US', 'en-GB']
+
             sub_opts = {
                 'skip_download': True,
                 'writesubtitles': True,
                 'writeautomaticsub': True,
-                'subtitleslangs': ['en', 'en-US', 'en-GB'],
+                'subtitleslangs': target_langs,
                 'subtitlesformat': 'vtt',
                 'outtmpl': os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}.%(ext)s"),
                 'quiet': True,
@@ -502,30 +528,10 @@ class YouTubeProvider(BaseRetrievalProvider):
             if ffmpeg_dir:
                 sub_opts['ffmpeg_location'] = ffmpeg_dir
 
+            sub_info = None
             try:
                 with yt_dlp.YoutubeDL(sub_opts) as ydl_sub:  # type: ignore[arg-type]
                     sub_info = ydl_sub.extract_info(canonical_url, download=True)
-                    sub_candidates = glob.glob(os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}*.vtt"))
-                    for sub_file in sub_candidates:
-                        if os.path.exists(sub_file) and os.path.getsize(sub_file) > 50:
-                            vtt_title = (sub_info or {}).get('title', f"YouTube Video {video_id}")
-                            vtt_duration = (sub_info or {}).get('duration')
-                            safe_name = os.path.basename(sub_file)
-                            return {
-                                'success': True,
-                                'source_type': 'youtube',
-                                'input_type': 'transcript',
-                                'original_filename': f"youtube_{video_id}_captions.vtt",
-                                'safe_filename': safe_name,
-                                'storage_path': sub_file,
-                                'file_size': os.path.getsize(sub_file),
-                                'file_extension': 'vtt',
-                                'source_url': source_reference,
-                                'video_id': video_id,
-                                'title': vtt_title,
-                                'duration': vtt_duration,
-                                'message': 'Official YouTube transcript retrieved in ~1s and staged for fast AI summarization.'
-                            }
             except DownloadError as de:
                 mapped = map_ytdlp_error(de)
                 # If the video itself is private, restricted, or unavailable, audio download will also fail.
@@ -540,9 +546,31 @@ class YouTubeProvider(BaseRetrievalProvider):
                         'code': mapped['code'],
                         'error': mapped['message']
                     }
-                logger.info("Subtitle retrieval encountered non-fatal DownloadError (%s); falling back to audio stream.", str(de))
+                logger.info("Subtitle retrieval encountered non-fatal DownloadError (%s); checking for downloaded files or falling back to audio.", str(de))
             except Exception as e:
-                logger.info("Subtitle retrieval non-fatal exception (%s); falling back to audio stream.", str(e))
+                logger.info("Subtitle retrieval non-fatal exception (%s); checking for downloaded files or falling back to audio.", str(e))
+
+            sub_candidates = glob.glob(os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}*.vtt"))
+            for sub_file in sub_candidates:
+                if os.path.exists(sub_file) and os.path.getsize(sub_file) > 50:
+                    vtt_title = (sub_info or meta_info or {}).get('title', f"YouTube Video {video_id}")
+                    vtt_duration = (sub_info or meta_info or {}).get('duration')
+                    safe_name = os.path.basename(sub_file)
+                    return {
+                        'success': True,
+                        'source_type': 'youtube',
+                        'input_type': 'transcript',
+                        'original_filename': f"youtube_{video_id}_captions.vtt",
+                        'safe_filename': safe_name,
+                        'storage_path': sub_file,
+                        'file_size': os.path.getsize(sub_file),
+                        'file_extension': 'vtt',
+                        'source_url': source_reference,
+                        'video_id': video_id,
+                        'title': vtt_title,
+                        'duration': vtt_duration,
+                        'message': 'Official YouTube transcript retrieved in ~1s and staged for fast AI summarization.'
+                    }
 
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',

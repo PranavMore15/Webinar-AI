@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import uuid
 import re
+from typing import Optional
 from flask import current_app
 
 class AudioProcessingError(Exception):
@@ -71,7 +72,7 @@ def get_ffprobe_executable() -> str:
     # If ffprobe is not found, fallback to ffmpeg which can also probe
     return get_ffmpeg_executable()
 
-def extract_audio_from_video(video_path: str, output_folder: str = None, timeout_seconds: int = 300) -> dict:
+def extract_audio_from_video(video_path: str, output_folder: Optional[str] = None, timeout_seconds: int = 300) -> dict:
     """
     Extracts audio track from an MP4 video file and converts it into 16kHz mono WAV,
     the optimal standard format for OpenAI Whisper speech-to-text transcription.
@@ -92,17 +93,18 @@ def extract_audio_from_video(video_path: str, output_folder: str = None, timeout
 
     ffmpeg_bin = get_ffmpeg_executable()
 
-    if output_folder is None:
+    folder = output_folder
+    if folder is None:
         try:
-            output_folder = current_app.config.get('AUDIO_FOLDER', os.path.join('storage', 'audio'))
+            folder = str(current_app.config.get('AUDIO_FOLDER', os.path.join('storage', 'audio')))
         except RuntimeError:
-            output_folder = os.path.join('storage', 'audio')
+            folder = os.path.join('storage', 'audio')
 
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(folder, exist_ok=True)
 
     base_name = os.path.splitext(os.path.basename(video_path))[0]
     unique_id = uuid.uuid4().hex[:10]
-    output_audio_path = os.path.join(output_folder, f"{unique_id}_{base_name}_audio.wav")
+    output_audio_path = os.path.join(folder, f"{unique_id}_{base_name}_audio.wav")
 
     # Command: extract audio, discard video (-vn), 16kHz mono PCM 16-bit WAV
     cmd = [
@@ -195,7 +197,7 @@ def get_audio_duration(audio_path: str) -> float:
 
     return 0.0
 
-def chunk_audio_if_needed(audio_path: str, chunk_length_seconds: int = 600, output_folder: str = None) -> list[str]:
+def chunk_audio_if_needed(audio_path: str, chunk_length_seconds: int = 600, output_folder: Optional[str] = None) -> list[str]:
     """
     Splits long audio into sequential chunks of chunk_length_seconds (default 10 mins).
     If audio duration is less than or equal to chunk_length_seconds, returns [audio_path].
@@ -223,30 +225,16 @@ def chunk_audio_if_needed(audio_path: str, chunk_length_seconds: int = 600, outp
             '-ss', str(current_start),
             '-t', str(chunk_length_seconds),
             '-i', audio_path,
-            '-acodec', 'copy',
+            '-acodec', 'pcm_s16le',
+            '-ar', '16000',
+            '-ac', '1',
             chunk_file
         ]
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
         if res.returncode == 0 and os.path.exists(chunk_file) and os.path.getsize(chunk_file) > 0:
             chunks.append(chunk_file)
         else:
-            # If copy failed, try re-encoding chunk
-            cmd_reencode = [
-                ffmpeg_bin,
-                '-y',
-                '-ss', str(current_start),
-                '-t', str(chunk_length_seconds),
-                '-i', audio_path,
-                '-acodec', 'pcm_s16le',
-                '-ar', '16000',
-                '-ac', '1',
-                chunk_file
-            ]
-            res_re = subprocess.run(cmd_reencode, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
-            if res_re.returncode == 0 and os.path.exists(chunk_file):
-                chunks.append(chunk_file)
-            else:
-                break
+            break
 
         current_start += chunk_length_seconds
         chunk_index += 1
