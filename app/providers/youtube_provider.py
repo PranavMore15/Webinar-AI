@@ -45,7 +45,7 @@ DEFAULT_MAX_DURATION_SECONDS = 14400
 DEFAULT_MAX_MEDIA_SIZE_BYTES = 250 * 1024 * 1024
 
 
-def extract_youtube_video_id(url_or_id: str) -> Optional[str]:
+def extract_youtube_video_id(url_or_id: Optional[str]) -> Optional[str]:
     """
     Extracts the 11-character YouTube video ID from standard URL formats or raw ID.
     Rejects malformed inputs, unrelated domains, and non-string values.
@@ -161,7 +161,7 @@ class YouTubeProvider(BaseRetrievalProvider):
     def provider_name(self) -> str:
         return 'youtube'
 
-    def identify(self, source_reference: str) -> bool:
+    def identify(self, source_reference: Optional[str]) -> bool:
         """Determines if the given reference is a YouTube video URL."""
         if not source_reference or not isinstance(source_reference, str):
             return False

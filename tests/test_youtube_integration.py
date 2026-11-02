@@ -403,6 +403,7 @@ class TestYouTubeIntegration(unittest.TestCase):
         job_id = job_resp.get_json()['job']['id']
         job = db.session.get(ProcessingJob, job_id)
         self.assertIsNotNone(job)
+        assert job is not None
         self.assertEqual(job.user_id, self.user_id)
         self.assertEqual(job.input_type, 'audio')
         self.assertEqual(job.source_type, 'youtube')

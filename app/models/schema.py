@@ -22,6 +22,17 @@ class User(db.Model):
     # Relationships
     jobs = db.relationship('ProcessingJob', backref='owner', cascade='all, delete-orphan', lazy='dynamic')
 
+    def __init__(self, username: str = '', email: str = '', role: str = 'user', is_active: bool = True, password_hash: str = '', **kwargs):
+        super().__init__(**kwargs)
+        if username:
+            self.username = username
+        if email:
+            self.email = email
+        self.role = role
+        self.is_active = is_active
+        if password_hash:
+            self.password_hash = password_hash
+
     def set_password(self, password: str):
         """Generates salted cryptographic hash of password."""
         self.password_hash = generate_password_hash(password, method='scrypt')
