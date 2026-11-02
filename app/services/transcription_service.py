@@ -5,6 +5,7 @@ ordered audio chunk stitching, and fallback handling for offline/test environmen
 """
 
 import os
+from typing import Optional, Dict, Any, List
 from flask import current_app
 from app.services.transcript_service import clean_and_normalize_transcript
 
@@ -85,7 +86,7 @@ def get_configured_device() -> str:
     except RuntimeError:
         return os.getenv('WHISPER_DEVICE', 'cpu').lower()
 
-def load_local_whisper_model(model_name: str = None, device: str = None):
+def load_local_whisper_model(model_name: Optional[str] = None, device: Optional[str] = None):
     """
     Loads local Whisper model checkpoint into memory cache.
     Raises TranscriptionError if whisper is not installed or download fails.
@@ -116,9 +117,9 @@ def load_local_whisper_model(model_name: str = None, device: str = None):
 
 def transcribe_audio_file(
     audio_path: str,
-    model_name: str = None,
-    device: str = None,
-    language: str = None
+    model_name: Optional[str] = None,
+    device: Optional[str] = None,
+    language: Optional[str] = None
 ) -> dict:
     """
     Transcribes a single 16kHz WAV audio file using local Whisper.
@@ -131,6 +132,7 @@ def transcribe_audio_file(
 
     model = load_local_whisper_model(model_name=model_name, device=device)
 
+    active_device = device or get_configured_device()
     options = {
         'task': 'transcribe',
         'fp16': False  # CPU execution requires fp16=False
@@ -138,12 +140,31 @@ def transcribe_audio_file(
     if language:
         options['language'] = language
 
+    # Performance Optimization for CPU Execution:
+    # Use greedy search (beam_size=1, best_of=1) and single temperature (temperature=0.0)
+    # to eliminate multi-beam decoding and temperature retry loops on CPU.
+    if active_device == 'cpu':
+        options.update({
+            'beam_size': 1,
+            'best_of': 1,
+            'temperature': 0.0,
+            'condition_on_previous_text': False,
+        })
+        try:
+            import torch
+            num_cores = os.cpu_count() or 4
+            optimal_threads = max(1, min(num_cores, 8))
+            if torch.get_num_threads() != optimal_threads:
+                torch.set_num_threads(optimal_threads)
+        except Exception:
+            pass
+
     try:
         result = model.transcribe(audio_path, **options)
     except Exception as e:
         raise TranscriptionError(f"Whisper transcription failed during inference: {str(e)}")
 
-    raw_text = result.get('text', '')
+    raw_text = str(result.get('text', ''))
     cleaned_text = clean_and_normalize_transcript(raw_text)
 
     if not cleaned_text:
@@ -158,9 +179,9 @@ def transcribe_audio_file(
 
 def transcribe_audio_chunks(
     audio_chunks: list[str],
-    model_name: str = None,
-    device: str = None,
-    language: str = None
+    model_name: Optional[str] = None,
+    device: Optional[str] = None,
+    language: Optional[str] = None
 ) -> dict:
     """
     Transcribes an ordered sequence of audio chunks and seamlessly concatenates

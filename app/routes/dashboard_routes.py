@@ -1039,10 +1039,15 @@ def get_job_status(job_id):
     if job.user_id != user_id and user_role != 'admin':
         return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
 
+    transcribing_label = (
+        'Step 1/4: Ingesting & normalizing transcript...'
+        if job.input_type == 'transcript'
+        else 'Step 1/4: Transcribing speech with Whisper AI (running on CPU)...'
+    )
     stage_labels = {
         'ready': 'Queued in database',
         'processing': 'Processing started...',
-        'transcribing': 'Step 1/4: Ingesting & normalizing transcript...',
+        'transcribing': transcribing_label,
         'summarizing': 'Step 2/4: Generating structured AI summary with Gemini...',
         'generating_pdf': 'Step 3/4: Compiling ReportLab PDF brief...',
         'sending_emails': 'Step 4/4: Delivering summary emails via SMTP...',

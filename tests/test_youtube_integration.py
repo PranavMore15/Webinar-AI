@@ -311,6 +311,40 @@ class TestYouTubeIntegration(unittest.TestCase):
         self.assertEqual(res['code'], 'PRIVATE_VIDEO')
         self.assertIn('private', res['error'].lower())
 
+    @patch('yt_dlp.YoutubeDL')
+    def test_retrieve_media_fast_path_with_ytdlp_subtitles(self, mock_ytdlp_cls):
+        """Verify retrieve_media downloads subtitles in ~1s and sets input_type='transcript' when subtitles exist."""
+        def fake_extract_info(url, download=True):
+            # Create a mock .vtt file matching the prefix pattern
+            prefix_pattern = os.path.join(self.upload_dir, 'fastsub12345_youtube_dQw4w9WgXcQ.en.vtt')
+            with open(prefix_pattern, 'w', encoding='utf-8') as f:
+                f.write("WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nFast subtitle transcription.\n")
+            return {
+                'title': 'AI Machine Learning Lecture',
+                'duration': 65,
+                'subtitles': {'en': [{'ext': 'vtt'}]}
+            }
+
+        mock_instance = MagicMock()
+        mock_instance.extract_info.side_effect = fake_extract_info
+        mock_ytdlp_cls.return_value.__enter__.return_value = mock_instance
+
+        # Call retrieve_media with unique prefix mock (12 chars)
+        with patch('uuid.uuid4') as mock_uuid:
+            mock_uuid.return_value.hex = 'fastsub12345'
+            res = self.provider.retrieve_media(
+                'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                destination_dir=self.upload_dir,
+                user_authorized=True
+            )
+
+        self.assertTrue(res['success'])
+        self.assertEqual(res['input_type'], 'transcript')
+        self.assertEqual(res['file_extension'], 'vtt')
+        self.assertIn('captions.vtt', res['original_filename'])
+        self.assertTrue(os.path.exists(res['storage_path']))
+        self.assertIn('transcript retrieved in ~1s', res['message'])
+
     # -------------------------------------------------------------------------
     # 5. Dashboard Endpoints (Check & Retrieve)
     # -------------------------------------------------------------------------

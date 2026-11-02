@@ -221,7 +221,7 @@ class YouTubeProvider(BaseRetrievalProvider):
             ydl_opts['ffmpeg_location'] = ffmpeg_dir
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
                 info = ydl.extract_info(canonical_url, download=False)
                 return {
                     'success': True,
@@ -358,6 +358,13 @@ class YouTubeProvider(BaseRetrievalProvider):
                 'explanation': f"YouTube video '{title}' verified with attached transcript for summarization."
             }
 
+        media_type = 'YouTube Video (Official Captions Detected)' if has_subtitles else 'YouTube Audio (yt-dlp Stream)'
+        explanation = (
+            f"YouTube video '{title}' verified. Official English captions/subtitles detected for instant transcript summarization."
+            if has_subtitles
+            else f"YouTube video '{title}' verified via yt-dlp. Audio stream will be retrieved and transcribed using Whisper AI."
+        )
+
         return {
             'success': True,
             'source_type': 'youtube',
@@ -368,12 +375,12 @@ class YouTubeProvider(BaseRetrievalProvider):
             'duration': duration,
             'duration_str': duration_str,
             'accessibility_status': 'Retrieval Supported',
-            'media_type': 'YouTube Audio (yt-dlp Stream)',
+            'media_type': media_type,
             'file_size': formatted_size,
             'retrieval_eligible': True,
             'has_subtitles': has_subtitles,
             'requires_auth': False,
-            'explanation': f"YouTube video '{title}' verified via yt-dlp. Audio stream will be retrieved and transcribed using Whisper."
+            'explanation': explanation
         }
 
     def retrieve_media(
@@ -471,6 +478,71 @@ class YouTubeProvider(BaseRetrievalProvider):
         unique_prefix = uuid.uuid4().hex[:12]
         outtmpl = os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}.%(ext)s")
         max_bytes = max_size_bytes or DEFAULT_MAX_MEDIA_SIZE_BYTES
+        canonical_url = get_canonical_youtube_url(video_id)
+        ffmpeg_dir = get_ffmpeg_directory()
+
+        # Performance Optimization:
+        # Check if the YouTube video has official or automatic English subtitles/captions.
+        # Subtitle extraction takes ~1 second and skips heavy CPU Whisper transcription entirely.
+        prefer_audio_stream = bool(opts.get('force_audio', False))
+        if not prefer_audio_stream:
+            sub_opts = {
+                'skip_download': True,
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': ['en', 'en-US', 'en-GB'],
+                'subtitlesformat': 'vtt',
+                'outtmpl': os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}.%(ext)s"),
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'socket_timeout': 15,
+                'geo_bypass': False,
+            }
+            if ffmpeg_dir:
+                sub_opts['ffmpeg_location'] = ffmpeg_dir
+
+            try:
+                with yt_dlp.YoutubeDL(sub_opts) as ydl_sub:  # type: ignore[arg-type]
+                    sub_info = ydl_sub.extract_info(canonical_url, download=True)
+                    sub_candidates = glob.glob(os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}*.vtt"))
+                    for sub_file in sub_candidates:
+                        if os.path.exists(sub_file) and os.path.getsize(sub_file) > 50:
+                            vtt_title = (sub_info or {}).get('title', f"YouTube Video {video_id}")
+                            vtt_duration = (sub_info or {}).get('duration')
+                            safe_name = os.path.basename(sub_file)
+                            return {
+                                'success': True,
+                                'source_type': 'youtube',
+                                'input_type': 'transcript',
+                                'original_filename': f"youtube_{video_id}_captions.vtt",
+                                'safe_filename': safe_name,
+                                'storage_path': sub_file,
+                                'file_size': os.path.getsize(sub_file),
+                                'file_extension': 'vtt',
+                                'source_url': source_reference,
+                                'video_id': video_id,
+                                'title': vtt_title,
+                                'duration': vtt_duration,
+                                'message': 'Official YouTube transcript retrieved in ~1s and staged for fast AI summarization.'
+                            }
+            except DownloadError as de:
+                mapped = map_ytdlp_error(de)
+                # If the video itself is private, restricted, or unavailable, audio download will also fail.
+                if mapped['code'] in ('PRIVATE_VIDEO', 'LOGIN_REQUIRED', 'VIDEO_UNAVAILABLE', 'GEOGRAPHIC_RESTRICTION', 'DRM_RESTRICTED', 'LIVE_EVENT'):
+                    for partial in glob.glob(os.path.join(destination_dir, f"{unique_prefix}_youtube_{video_id}.*")):
+                        try:
+                            os.remove(partial)
+                        except Exception:
+                            pass
+                    return {
+                        'success': False,
+                        'code': mapped['code'],
+                        'error': mapped['message']
+                    }
+                logger.info("Subtitle retrieval encountered non-fatal DownloadError (%s); falling back to audio stream.", str(de))
+            except Exception as e:
+                logger.info("Subtitle retrieval non-fatal exception (%s); falling back to audio stream.", str(e))
 
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
@@ -482,14 +554,13 @@ class YouTubeProvider(BaseRetrievalProvider):
             'max_filesize': max_bytes,
             'geo_bypass': False,
         }
-        ffmpeg_dir = get_ffmpeg_directory()
         if ffmpeg_dir:
             ydl_opts['ffmpeg_location'] = ffmpeg_dir
 
         canonical_url = get_canonical_youtube_url(video_id)
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
                 info = ydl.extract_info(canonical_url, download=True)
                 downloaded_title = info.get('title', f"YouTube Video {video_id}")
                 downloaded_duration = info.get('duration')
