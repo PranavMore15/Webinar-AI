@@ -3,10 +3,12 @@ from datetime import datetime, timezone
 from app import create_app
 from app.config import TestConfig
 from app.models import db, User, ProcessingJob
+from app.services.pipeline_service import run_job_pipeline
 
 class TestDashboardRoutes(unittest.TestCase):
     """
-    Unit tests for dashboard API endpoints including active job statuses.
+    Unit tests for dashboard API endpoints including active job statuses,
+    job execution cancellation, and pipeline lifecycle guards.
     """
     def setUp(self):
         self.app = create_app(TestConfig)
@@ -63,6 +65,101 @@ class TestDashboardRoutes(unittest.TestCase):
         self.assertIn('created_at', job)
         self.assertTrue(len(job['created_at']) > 0)
 
+    def test_cancel_job_success(self):
+        """Verify an authenticated user can cancel their active processing job."""
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.post(f'/api/jobs/{self.job.id}/cancel')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+
+        self.assertTrue(data['success'])
+        self.assertEqual(data['job']['overall_status'], 'cancelled')
+        self.assertIn('cancelled', data['message'].lower())
+
+        updated_job = db.session.get(ProcessingJob, self.job.id)
+        self.assertEqual(updated_job.overall_status, 'cancelled')
+        self.assertEqual(updated_job.error_message, 'Job execution cancelled by user.')
+        self.assertEqual(updated_job.transcript_status, 'cancelled')
+        self.assertEqual(updated_job.summary_status, 'cancelled')
+        self.assertEqual(updated_job.pdf_status, 'cancelled')
+        self.assertEqual(updated_job.email_status, 'cancelled')
+
+    def test_cancel_job_permission_denied(self):
+        """Verify a non-owner user cannot cancel another user's job."""
+        other_user = User(username='other_user', email='other@webinarai.edu', role='user', is_active=True)
+        other_user.set_password('Pass1234!')
+        db.session.add(other_user)
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = other_user.id
+            sess['role'] = 'user'
+
+        resp = self.client.post(f'/api/jobs/{self.job.id}/cancel')
+        self.assertEqual(resp.status_code, 403)
+        data = resp.get_json()
+        self.assertFalse(data['success'])
+        self.assertIn('Access denied', data['message'])
+
+        # Ensure job status remains unchanged
+        unchanged_job = db.session.get(ProcessingJob, self.job.id)
+        self.assertEqual(unchanged_job.overall_status, 'processing')
+
+    def test_cancel_job_admin_forbidden_by_role_guard(self):
+        """Verify admin accounts are forbidden from processing workspace endpoints by @user_required."""
+        admin = User(username='admin_user', email='admin@webinarai.edu', role='admin', is_active=True)
+        admin.set_password('AdminPass123!')
+        db.session.add(admin)
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = admin.id
+            sess['role'] = 'admin'
+
+        resp = self.client.post(f'/api/jobs/{self.job.id}/cancel')
+        self.assertEqual(resp.status_code, 403)
+        data = resp.get_json()
+        self.assertFalse(data['success'])
+        self.assertIn('Administrator accounts cannot access the processing workspace', data['message'])
+
+    def test_cancel_job_terminal_state_rejected(self):
+        """Verify cancelling an already completed, failed, or cancelled job returns 400."""
+        self.job.overall_status = 'completed'
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.post(f'/api/jobs/{self.job.id}/cancel')
+        self.assertEqual(resp.status_code, 400)
+        data = resp.get_json()
+        self.assertFalse(data['success'])
+        self.assertIn('already completed', data['message'])
+
+    def test_cancel_job_not_found(self):
+        """Verify cancelling non-existent job returns 404."""
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.post('/api/jobs/99999/cancel')
+        self.assertEqual(resp.status_code, 404)
+        data = resp.get_json()
+        self.assertFalse(data['success'])
+
+    def test_pipeline_halts_on_cancelled_job(self):
+        """Verify run_job_pipeline aborts early without doing work when job is cancelled."""
+        self.job.overall_status = 'cancelled'
+        db.session.commit()
+
+        res = run_job_pipeline(self.job.id, self.app)
+        self.assertFalse(res['success'])
+        self.assertEqual(res['overall_status'], 'cancelled')
+        self.assertEqual(res['stage'], 'cancelled')
+
 if __name__ == '__main__':
     unittest.main()
-

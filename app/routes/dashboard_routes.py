@@ -36,7 +36,7 @@ def index():
     # Query persistent recent jobs for this authenticated user
     recent_jobs = []
     try:
-        recent_jobs = ProcessingJob.query.filter_by(user_id=user_id).order_by(ProcessingJob.created_at.desc()).limit(10).all()
+        recent_jobs = ProcessingJob.query.filter_by(user_id=user_id).order_by(ProcessingJob.created_at.desc()).limit(50).all()
     except Exception:
         recent_jobs = []
 
@@ -1009,6 +1009,7 @@ def get_job_status(job_id):
         'sending_emails': 'Step 4/4: Delivering summary emails via SMTP...',
         'completed': 'Completed: Summary brief generated and delivered!',
         'partially_sent': 'Completed with partial email delivery',
+        'cancelled': 'Job execution cancelled by user',
         'failed': f"Processing failed: {job.error_message or 'Error occurred'}"
     }
     progress_map = {
@@ -1020,6 +1021,7 @@ def get_job_status(job_id):
         'sending_emails': 90,
         'completed': 100,
         'partially_sent': 100,
+        'cancelled': 100,
         'failed': 100
     }
 
@@ -1048,6 +1050,53 @@ def get_job_status(job_id):
             'failed_emails': job.failed_emails,
             'error_message': job.error_message,
             'created_at': job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else ''
+        }
+    }), 200
+
+
+@dashboard_bp.route('/api/jobs/<int:job_id>/cancel', methods=['POST'])
+@user_required
+def cancel_job(job_id):
+    """
+    Cancels an active or queued processing job.
+    Enforces user ownership, marks overall_status as 'cancelled',
+    and records cancellation explanation.
+    """
+    user_id = session.get('user_id')
+    user_role = session.get('role')
+    job = db.session.get(ProcessingJob, job_id)
+    if not job:
+        return jsonify({'success': False, 'message': 'Job not found.'}), 404
+
+    if job.user_id != user_id and user_role != 'admin':
+        return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
+
+    if job.overall_status in ['completed', 'partially_sent', 'failed', 'cancelled']:
+        return jsonify({
+            'success': False,
+            'message': f"Cannot cancel Job #{job.id}: Job is already {job.overall_status}."
+        }), 400
+
+    job.overall_status = 'cancelled'
+    job.error_message = 'Job execution cancelled by user.'
+    if job.transcript_status in ['pending', 'processing']:
+        job.transcript_status = 'cancelled'
+    if job.summary_status in ['pending', 'generating']:
+        job.summary_status = 'cancelled'
+    if job.pdf_status in ['pending', 'generating']:
+        job.pdf_status = 'cancelled'
+    if job.email_status in ['pending', 'sending']:
+        job.email_status = 'cancelled'
+
+    db.session.commit()
+
+    return jsonify({
+        'success': True,
+        'message': f"Processing Job #{job.id} execution has been cancelled.",
+        'job': {
+            'id': job.id,
+            'overall_status': job.overall_status,
+            'error_message': job.error_message
         }
     }), 200
 
@@ -1088,7 +1137,7 @@ def get_active_job_statuses():
     query = ProcessingJob.query
     if user_role != 'admin':
         query = query.filter_by(user_id=user_id)
-    jobs = query.order_by(ProcessingJob.created_at.desc()).limit(15).all()
+    jobs = query.order_by(ProcessingJob.created_at.desc()).limit(50).all()
 
     progress_map = {
         'ready': 5,
@@ -1099,6 +1148,7 @@ def get_active_job_statuses():
         'sending_emails': 90,
         'completed': 100,
         'partially_sent': 100,
+        'cancelled': 100,
         'failed': 100
     }
 

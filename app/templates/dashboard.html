@@ -637,15 +637,22 @@
 
         <div class="card-body p-4">
             <!-- Active & Recent Processing Jobs List -->
-            <div id="recentJobsContainer" class="table-responsive mb-4 {{ 'd-none' if not recent_jobs else '' }}">
+            <div id="recentJobsContainer" class="mb-4 {{ 'd-none' if not recent_jobs else '' }}">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <h6 class="fw-bold mb-0 text-dark">
                         <i class="bi bi-list-task text-primary me-1"></i> Registered Processing Jobs (MySQL Persisted)
                     </h6>
-                    <span id="recentJobsCountBadge" class="badge bg-primary-subtle text-primary">{{ recent_jobs|length }} Job{{ 's' if recent_jobs|length != 1 else '' }}</span>
+                    <div class="d-flex align-items-center gap-2">
+                        <span id="recentJobsCountBadge" class="badge bg-primary-subtle text-primary">{{ recent_jobs|length }} Job{{ 's' if recent_jobs|length != 1 else '' }}</span>
+                        <button type="button" id="btnToggleJobsView" class="btn btn-xs btn-outline-secondary rounded-pill px-2 py-1 small d-flex align-items-center gap-1 shadow-xs" title="Maximize table to view all jobs">
+                            <i class="bi bi-arrows-expand" id="iconToggleJobs"></i>
+                            <span id="textToggleJobs" class="small fw-semibold">Maximize</span>
+                        </button>
+                    </div>
                 </div>
-                <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border small">
-                    <thead class="table-light">
+                <div id="recentJobsTableWrapper" class="table-responsive border rounded bg-white mb-2 jobs-view-minimized" style="max-height: 275px; overflow-y: auto; transition: max-height 0.3s ease;">
+                    <table class="table table-sm table-hover align-middle mb-0 bg-white rounded border-0 small">
+                        <thead class="table-light sticky-top">
                         <tr>
                             <th style="width: 70px;">Job ID</th>
                             <th>Input Type</th>
@@ -682,9 +689,18 @@
                                     <i class="bi bi-check2-circle me-1"></i>Completed
                                 </span>
                                 {% elif job.overall_status in ['ready', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing'] %}
-                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
-                                    <span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>
-                                    {{ job.overall_status|replace('_', ' ')|capitalize }}
+                                <div class="d-inline-flex align-items-center gap-1">
+                                    <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                                        <span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>
+                                        {{ job.overall_status|replace('_', ' ')|capitalize }}
+                                    </span>
+                                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 rounded-pill small fw-semibold btn-cancel-job" onclick="cancelJobExecution({{ job.id }})" title="Cancel Job Execution">
+                                        <i class="bi bi-x-circle me-1"></i>Cancel
+                                    </button>
+                                </div>
+                                {% elif job.overall_status == 'cancelled' %}
+                                <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">
+                                    <i class="bi bi-slash-circle me-1"></i>Cancelled
                                 </span>
                                 {% elif job.overall_status == 'partially_sent' %}
                                 <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">
@@ -725,6 +741,10 @@
                                 {% elif job.pdf_status == 'failed' %}
                                 <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="{{ job.error_message or 'PDF Generation Failed' }}">
                                     <i class="bi bi-exclamation-triangle-fill me-1"></i> Failed
+                                </span>
+                                {% elif job.pdf_status == 'cancelled' or job.overall_status == 'cancelled' %}
+                                <span class="badge bg-light text-muted border rounded-pill px-2 py-1">
+                                    <i class="bi bi-dash-circle me-1"></i> Cancelled
                                 </span>
                                 {% else %}
                                 <span class="badge bg-light text-muted border rounded-pill px-2 py-1">
@@ -775,6 +795,10 @@
                                     <i class="bi bi-send-fill text-white"></i>
                                     <span>Send Emails</span>
                                 </button>
+                                {% elif job.email_status == 'cancelled' or job.overall_status == 'cancelled' %}
+                                <span class="badge bg-light text-muted border rounded-pill px-2 py-1">
+                                    <i class="bi bi-dash-circle me-1"></i> Cancelled
+                                </span>
                                 {% else %}
                                 <span class="badge bg-light text-muted border rounded-pill px-2 py-1" title="Awaiting PDF summary generation">
                                     <i class="bi bi-hourglass me-1"></i>Awaiting PDF
@@ -784,7 +808,15 @@
                         </tr>
                         {% endfor %}
                     </tbody>
-                </table>
+                    </table>
+                </div>
+
+                <div id="jobsMinMaxFooter" class="d-flex justify-content-between align-items-center px-2 py-1 small text-muted bg-light border rounded">
+                    <span id="jobsViewStatusText"><i class="bi bi-arrows-collapse me-1"></i>Compact view (limited height). Scroll to browse or click Maximize.</span>
+                    <button type="button" id="btnFooterToggleJobs" class="btn btn-link btn-sm text-decoration-none p-0 fw-semibold text-primary">
+                        <i class="bi bi-arrows-expand me-1"></i>Maximize
+                    </button>
+                </div>
             </div>
 
             <!-- Empty State (Active when no jobs exist) -->

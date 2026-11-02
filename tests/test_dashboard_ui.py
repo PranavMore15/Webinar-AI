@@ -1,14 +1,16 @@
 import os
 import subprocess
 import unittest
+from datetime import datetime, timezone
 from app import create_app
 from app.config import TestConfig
-from app.models import db, User
+from app.models import db, User, ProcessingJob
 
 class TestDashboardUI(unittest.TestCase):
     """
     Automated tests verifying dashboard client-side UI script syntax,
-    template structure, and multi-source panel accessibility.
+    template structure, Section C space management (maximize/minimize),
+    and job cancellation controls.
     """
     def setUp(self):
         self.app = create_app(TestConfig)
@@ -123,7 +125,67 @@ class TestDashboardUI(unittest.TestCase):
         self.assertIn('prependJobToTable(result.job)', content)
         self.assertIn('updateJobTableRowFromData', content)
 
+    def test_dashboard_section_c_space_management_and_cancel_controls(self):
+        """Verify Section C renders scrollable wrapper, max/min toggles, and cancellation controls."""
+        # Create an active job and a cancelled job
+        active_job = ProcessingJob(
+            user_id=self.user_id,
+            title='Active Processing Webinar',
+            input_type='video',
+            input_file_name='active_webinar.mp4',
+            input_file_path='/tmp/active_webinar.mp4',
+            overall_status='transcribing',
+            total_recipients=10,
+            created_at=datetime.now(timezone.utc)
+        )
+        cancelled_job = ProcessingJob(
+            user_id=self.user_id,
+            title='Cancelled Webinar',
+            input_type='transcript',
+            input_file_name='cancelled_transcript.txt',
+            input_file_path='/tmp/cancelled_transcript.txt',
+            overall_status='cancelled',
+            total_recipients=3,
+            created_at=datetime.now(timezone.utc)
+        )
+        db.session.add_all([active_job, cancelled_job])
+        db.session.commit()
+
+        self._login()
+        response = self.client.get('/dashboard')
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+
+        # 1. Verify space management container & elements
+        self.assertIn('id="recentJobsTableWrapper"', html)
+        self.assertIn('jobs-view-minimized', html)
+        self.assertIn('max-height: 275px', html)
+        self.assertIn('sticky-top', html)
+        self.assertIn('id="btnToggleJobsView"', html)
+        self.assertIn('id="iconToggleJobs"', html)
+        self.assertIn('id="textToggleJobs"', html)
+        self.assertIn('id="jobsMinMaxFooter"', html)
+        self.assertIn('id="btnFooterToggleJobs"', html)
+
+        # 2. Verify active job contains Cancel button
+        self.assertIn(f'job-status-cell-{active_job.id}', html)
+        self.assertIn(f'cancelJobExecution({active_job.id})', html)
+        self.assertIn('btn-cancel-job', html)
+
+        # 3. Verify cancelled job displays Cancelled badge
+        self.assertIn(f'job-status-cell-{cancelled_job.id}', html)
+        self.assertIn('bi-slash-circle me-1"></i>Cancelled', html)
+
+        # 4. Verify JS functions exist in dashboard.js
+        js_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'app', 'static', 'js', 'dashboard.js')
+        with open(js_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        self.assertIn('window.cancelJobExecution', content)
+        self.assertIn('setJobsViewMode', content)
+        self.assertIn('initJobsViewMinMaxManager', content)
+        self.assertIn('webinarai_jobs_view_mode', content)
+
 
 if __name__ == '__main__':
     unittest.main()
-

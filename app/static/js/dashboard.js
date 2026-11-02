@@ -1298,11 +1298,25 @@ document.addEventListener('DOMContentLoaded', function () {
             } else if (['transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing', 'ready'].includes(job.overall_status)) {
                 const label = job.overall_status.replace('_', ' ');
                 const cap = label.charAt(0).toUpperCase() + label.slice(1);
-                statusCell.innerHTML = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle"><span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>${escapeHtml(cap)}</span>`;
+                statusCell.innerHTML = `
+                    <div class="d-inline-flex align-items-center gap-1">
+                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                            <span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>${escapeHtml(cap)}
+                        </span>
+                        <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 rounded-pill small fw-semibold btn-cancel-job" onclick="cancelJobExecution(${job.id})" title="Cancel Job Execution">
+                            <i class="bi bi-x-circle me-1"></i>Cancel
+                        </button>
+                    </div>`;
+            } else if (job.overall_status === 'cancelled') {
+                statusCell.innerHTML = `<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle"><i class="bi bi-slash-circle me-1"></i>Cancelled</span>`;
             } else if (job.overall_status === 'partially_sent') {
                 statusCell.innerHTML = `<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle"><i class="bi bi-exclamation-circle-fill me-1"></i>Partial</span>`;
             } else if (job.overall_status === 'failed') {
                 statusCell.innerHTML = `<span class="badge bg-danger-subtle text-danger border border-danger-subtle" title="${escapeHtml(job.error_message || 'Failed')}"><i class="bi bi-x-circle-fill me-1"></i>Failed</span>`;
+            } else {
+                const label = (job.overall_status || 'ready').replace('_', ' ');
+                const cap = label.charAt(0).toUpperCase() + label.slice(1);
+                statusCell.innerHTML = `<span class="badge bg-secondary-subtle text-secondary border"><i class="bi bi-hourglass-split me-1"></i>${escapeHtml(cap)}</span>`;
             }
         }
 
@@ -1317,6 +1331,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 pdfCell.innerHTML = `<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-1"><span class="spinner-border spinner-border-sm me-1" style="width: 0.75rem; height: 0.75rem;"></span> Generating</span>`;
             } else if (job.pdf_status === 'failed') {
                 pdfCell.innerHTML = `<span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="${escapeHtml(job.error_message || 'PDF Generation Failed')}"><i class="bi bi-exclamation-triangle-fill me-1"></i> Failed</span>`;
+            } else if (job.pdf_status === 'cancelled' || job.overall_status === 'cancelled') {
+                pdfCell.innerHTML = `<span class="badge bg-light text-muted border rounded-pill px-2 py-1"><i class="bi bi-dash-circle me-1"></i> Cancelled</span>`;
             }
         }
 
@@ -1331,6 +1347,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 emailCell.innerHTML = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-2 py-1"><span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span> Sending...</span>`;
             } else if (job.email_status === 'failed') {
                 emailCell.innerHTML = `<div class="d-inline-flex align-items-center gap-1"><span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="Delivery failed"><i class="bi bi-x-circle-fill me-1"></i>Failed</span><button type="button" class="btn btn-sm btn-outline-danger rounded-pill px-2 py-0.5 small fw-semibold" onclick="openEmailPreFlightModal(${job.id}, true)" title="Retry Sending"><i class="bi bi-arrow-repeat me-1"></i>Retry</button><button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal(${job.id})" title="View Error Report"><i class="bi bi-file-text"></i></button></div>`;
+            } else if (job.email_status === 'cancelled' || job.overall_status === 'cancelled') {
+                emailCell.innerHTML = `<span class="badge bg-light text-muted border rounded-pill px-2 py-1"><i class="bi bi-dash-circle me-1"></i> Cancelled</span>`;
             } else if (job.pdf_ready || (job.pdf_status === 'completed' && job.pdf_path)) {
                 emailCell.innerHTML = `<button type="button" class="btn btn-sm btn-primary rounded-pill px-2.5 py-1 fw-semibold d-inline-flex align-items-center gap-1 shadow-xs" onclick="openEmailPreFlightModal(${job.id}, false)" title="Send Summary PDF to Validated Recipients"><i class="bi bi-send-fill text-white"></i><span>Send Emails</span></button>`;
             }
@@ -1354,7 +1372,15 @@ document.addEventListener('DOMContentLoaded', function () {
         if (job.overall_status === 'completed') {
             statusHtml = '<span class="badge bg-success-subtle text-success border border-success-subtle"><i class="bi bi-check2-circle me-1"></i>Completed</span>';
         } else if (['ready', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails', 'processing'].includes(job.overall_status)) {
-            statusHtml = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle"><span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>${escapeHtml(capStatus)}</span>`;
+            statusHtml = `
+                <div class="d-inline-flex align-items-center gap-1">
+                    <span class="badge bg-primary-subtle text-primary border border-primary-subtle"><span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>${escapeHtml(capStatus)}</span>
+                    <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 rounded-pill small fw-semibold btn-cancel-job" onclick="cancelJobExecution(${job.id})" title="Cancel Job Execution">
+                        <i class="bi bi-x-circle me-1"></i>Cancel
+                    </button>
+                </div>`;
+        } else if (job.overall_status === 'cancelled') {
+            statusHtml = '<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle"><i class="bi bi-slash-circle me-1"></i>Cancelled</span>';
         } else if (job.overall_status === 'partially_sent') {
             statusHtml = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle"><i class="bi bi-exclamation-circle-fill me-1"></i>Partial</span>';
         } else if (job.overall_status === 'failed') {
@@ -1372,6 +1398,8 @@ document.addEventListener('DOMContentLoaded', function () {
             pdfHtml = '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-1"><span class="spinner-border spinner-border-sm me-1" style="width: 0.75rem; height: 0.75rem;"></span> Generating</span>';
         } else if (job.pdf_status === 'failed') {
             pdfHtml = `<span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="${escapeHtml(job.error_message || 'PDF Generation Failed')}"><i class="bi bi-exclamation-triangle-fill me-1"></i> Failed</span>`;
+        } else if (job.pdf_status === 'cancelled' || job.overall_status === 'cancelled') {
+            pdfHtml = '<span class="badge bg-light text-muted border rounded-pill px-2 py-1"><i class="bi bi-dash-circle me-1"></i> Cancelled</span>';
         }
 
         let emailHtml = '<span class="badge bg-light text-muted border rounded-pill px-2 py-1" title="Awaiting PDF summary generation"><i class="bi bi-hourglass me-1"></i>Awaiting PDF</span>';
@@ -1383,6 +1411,8 @@ document.addEventListener('DOMContentLoaded', function () {
             emailHtml = '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-2 py-1"><span class="spinner-border spinner-border-sm me-1" style="width: 0.7rem; height: 0.7rem;"></span> Sending...</span>';
         } else if (job.email_status === 'failed') {
             emailHtml = `<div class="d-inline-flex align-items-center gap-1"><span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-1" title="Delivery failed"><i class="bi bi-x-circle-fill me-1"></i>Failed</span><button type="button" class="btn btn-sm btn-outline-danger rounded-pill px-2 py-0.5 small fw-semibold" onclick="openEmailPreFlightModal(${job.id}, true)" title="Retry Sending"><i class="bi bi-arrow-repeat me-1"></i>Retry</button><button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-0.5 small" onclick="openDeliveryReportModal(${job.id})" title="View Error Report"><i class="bi bi-file-text"></i></button></div>`;
+        } else if (job.email_status === 'cancelled' || job.overall_status === 'cancelled') {
+            emailHtml = '<span class="badge bg-light text-muted border rounded-pill px-2 py-1"><i class="bi bi-dash-circle me-1"></i> Cancelled</span>';
         } else if (job.pdf_ready || (job.pdf_status === 'completed' && job.pdf_path)) {
             emailHtml = `<button type="button" class="btn btn-sm btn-primary rounded-pill px-2.5 py-1 fw-semibold d-inline-flex align-items-center gap-1 shadow-xs" onclick="openEmailPreFlightModal(${job.id}, false)" title="Send Summary PDF to Validated Recipients"><i class="bi bi-send-fill text-white"></i><span>Send Emails</span></button>`;
         }
@@ -1528,6 +1558,20 @@ document.addEventListener('DOMContentLoaded', function () {
                         btnModalDownloadPdf.href = job.pdf_url;
                         modalCompletionActions.classList.remove('d-none');
                     }
+
+                    btnReloadDashboard.classList.remove('d-none');
+
+                } else if (job.overall_status === 'cancelled') {
+                    clearInterval(activePollInterval);
+                    activePollInterval = null;
+
+                    modalProgressBar.className = 'progress-bar bg-secondary';
+                    progressPercentageBadge.className = 'badge bg-secondary rounded-pill px-2.5 py-1';
+                    progressSpinner.classList.add('d-none');
+
+                    modalJobErrorAlert.classList.remove('d-none');
+                    modalErrorTitle.textContent = 'Pipeline Execution Cancelled';
+                    modalErrorMessage.textContent = job.error_message || 'Processing was cancelled by user.';
 
                     btnReloadDashboard.classList.remove('d-none');
 
@@ -1726,6 +1770,111 @@ document.addEventListener('DOMContentLoaded', function () {
         }, 3000);
     }
     initActiveJobsPolling();
+
+    // -------------------------------------------------------------------------
+    // Section C Jobs Table Maximize / Minimize View Manager
+    // -------------------------------------------------------------------------
+    function setJobsViewMode(mode) {
+        const wrapper = document.getElementById('recentJobsTableWrapper');
+        const btnHeader = document.getElementById('btnToggleJobsView');
+        const iconHeader = document.getElementById('iconToggleJobs');
+        const textHeader = document.getElementById('textToggleJobs');
+        const btnFooter = document.getElementById('btnFooterToggleJobs');
+        const statusText = document.getElementById('jobsViewStatusText');
+
+        if (!wrapper) return;
+
+        if (mode === 'maximized') {
+            wrapper.style.maxHeight = 'none';
+            wrapper.classList.remove('jobs-view-minimized');
+            wrapper.classList.add('jobs-view-maximized');
+            if (iconHeader) iconHeader.className = 'bi bi-arrows-collapse';
+            if (textHeader) textHeader.textContent = 'Minimize';
+            if (btnHeader) btnHeader.title = 'Minimize table to save space';
+            if (btnFooter) btnFooter.innerHTML = '<i class="bi bi-arrows-collapse me-1"></i>Minimize';
+            if (statusText) statusText.innerHTML = '<i class="bi bi-check-circle text-success me-1"></i>Expanded view showing all processed jobs.';
+            try { localStorage.setItem('webinarai_jobs_view_mode', 'maximized'); } catch(e) {}
+        } else {
+            wrapper.style.maxHeight = '275px';
+            wrapper.classList.remove('jobs-view-maximized');
+            wrapper.classList.add('jobs-view-minimized');
+            if (iconHeader) iconHeader.className = 'bi bi-arrows-expand';
+            if (textHeader) textHeader.textContent = 'Maximize';
+            if (btnHeader) btnHeader.title = 'Maximize table to view all jobs';
+            if (btnFooter) btnFooter.innerHTML = '<i class="bi bi-arrows-expand me-1"></i>Maximize';
+            if (statusText) statusText.innerHTML = '<i class="bi bi-arrows-collapse me-1"></i>Compact view (limited height). Scroll to browse or click Maximize.';
+            try { localStorage.setItem('webinarai_jobs_view_mode', 'minimized'); } catch(e) {}
+        }
+    }
+
+    function initJobsViewMinMaxManager() {
+        const btnHeader = document.getElementById('btnToggleJobsView');
+        const btnFooter = document.getElementById('btnFooterToggleJobs');
+
+        let savedMode = 'minimized';
+        try {
+            savedMode = localStorage.getItem('webinarai_jobs_view_mode') || 'minimized';
+        } catch(e) {}
+
+        setJobsViewMode(savedMode);
+
+        const toggleHandler = () => {
+            const wrapper = document.getElementById('recentJobsTableWrapper');
+            const isMax = wrapper && wrapper.classList.contains('jobs-view-maximized');
+            setJobsViewMode(isMax ? 'minimized' : 'maximized');
+        };
+
+        if (btnHeader) btnHeader.addEventListener('click', toggleHandler);
+        if (btnFooter) btnFooter.addEventListener('click', toggleHandler);
+    }
+
+    window.initJobsViewMinMaxManager = initJobsViewMinMaxManager;
+    window.setJobsViewMode = setJobsViewMode;
+    initJobsViewMinMaxManager();
+
+    // -------------------------------------------------------------------------
+    // Section C Cancel Job Execution Action Controller
+    // -------------------------------------------------------------------------
+    window.cancelJobExecution = async function(jobId) {
+        if (!jobId) return;
+        const confirmed = window.confirm(`Are you sure you want to cancel the execution of Processing Job #${jobId}? Active tasks in this pipeline will be halted.`);
+        if (!confirmed) return;
+
+        const statusCell = document.getElementById(`job-status-cell-${jobId}`);
+        const originalHtml = statusCell ? statusCell.innerHTML : '';
+        if (statusCell) {
+            statusCell.innerHTML = `<span class="badge bg-secondary-subtle text-secondary border"><span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>Cancelling...</span>`;
+        }
+
+        try {
+            const response = await fetch(`/api/jobs/${jobId}/cancel`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            const data = await response.json();
+            if (response.ok && data.success) {
+                updateJobTableRowFromData({
+                    id: jobId,
+                    overall_status: 'cancelled',
+                    transcript_status: 'cancelled',
+                    summary_status: 'cancelled',
+                    pdf_status: 'cancelled',
+                    email_status: 'cancelled',
+                    error_message: 'Job execution cancelled by user.'
+                });
+            } else {
+                if (statusCell) statusCell.innerHTML = originalHtml;
+                alert(data.message || `Failed to cancel Job #${jobId}.`);
+            }
+        } catch (err) {
+            console.error('Error cancelling job execution:', err);
+            if (statusCell) statusCell.innerHTML = originalHtml;
+            alert('Network error while attempting to cancel job execution: ' + err.message);
+        }
+    };
 
     // -------------------------------------------------------------------------
     // 7. Initial Bootstrap from Existing Active Session States

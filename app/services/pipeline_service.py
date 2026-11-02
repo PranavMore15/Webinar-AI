@@ -41,6 +41,10 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
             logger.info(f"[Pipeline] Job #{job.id} already completed. Skipping redundant pipeline execution.")
             return {'success': True, 'job_id': job.id, 'overall_status': 'completed'}
 
+        if job.overall_status == 'cancelled':
+            logger.info(f"[Pipeline] Job #{job.id} was cancelled. Skipping pipeline execution.")
+            return {'success': False, 'stage': 'cancelled', 'job_id': job.id, 'overall_status': 'cancelled', 'error': 'Job cancelled by user.'}
+
         # Failure Isolation Guard: halt immediately if media retrieval failed
         if getattr(job, 'retrieval_status', 'completed') == 'failed':
             logger.error(f"[Pipeline] Job #{job.id} retrieval failed. Halting pipeline before summarization.")
@@ -51,6 +55,11 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
 
         # ---------------------------------------------------------------------
         # Stage 1: Transcript Ingestion / Transcription
+        db.session.expire_all()
+        job = db.session.get(ProcessingJob, job_id)
+        if not job or job.overall_status == 'cancelled':
+            logger.info(f"[Pipeline] Job #{job_id} was cancelled by user. Halting pipeline execution.")
+            return {'success': False, 'stage': 'cancelled', 'error': 'Job cancelled by user.'}
         # ---------------------------------------------------------------------
         try:
             job.overall_status = 'transcribing'
@@ -83,6 +92,11 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
 
         # ---------------------------------------------------------------------
         # Stage 2: Gemini AI Summarization
+        db.session.expire_all()
+        job = db.session.get(ProcessingJob, job_id)
+        if not job or job.overall_status == 'cancelled':
+            logger.info(f"[Pipeline] Job #{job_id} was cancelled by user. Halting pipeline execution.")
+            return {'success': False, 'stage': 'cancelled', 'error': 'Job cancelled by user.'}
         # ---------------------------------------------------------------------
         try:
             job = db.session.get(ProcessingJob, job_id)
@@ -116,6 +130,11 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
 
         # ---------------------------------------------------------------------
         # Stage 3: PDF Document Compilation
+        db.session.expire_all()
+        job = db.session.get(ProcessingJob, job_id)
+        if not job or job.overall_status == 'cancelled':
+            logger.info(f"[Pipeline] Job #{job_id} was cancelled by user. Halting pipeline execution.")
+            return {'success': False, 'stage': 'cancelled', 'error': 'Job cancelled by user.'}
         # ---------------------------------------------------------------------
         try:
             job = db.session.get(ProcessingJob, job_id)
@@ -144,6 +163,11 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
 
         # ---------------------------------------------------------------------
         # Stage 4: SMTP Email Delivery
+        db.session.expire_all()
+        job = db.session.get(ProcessingJob, job_id)
+        if not job or job.overall_status == 'cancelled':
+            logger.info(f"[Pipeline] Job #{job_id} was cancelled by user. Halting pipeline execution.")
+            return {'success': False, 'stage': 'cancelled', 'error': 'Job cancelled by user.'}
         # ---------------------------------------------------------------------
         try:
             job = db.session.get(ProcessingJob, job_id)
