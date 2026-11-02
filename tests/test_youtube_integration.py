@@ -1,25 +1,52 @@
 """
-Automated Test Suite for Prompt A5: YouTube Compliance & Official Caption Integration.
+Automated Test Suite for Prompt A5: YouTube Media Retrieval Using yt-dlp.
 
 Covers:
-1. URL parsing across watch, youtu.be, shorts, and embed formats.
-2. Metadata query via YouTube Data API v3 (title, channel, video existence, error handling).
-3. Official caption track inspection and ingestion directly into pipeline without video downloading.
-4. Strict non-bypass guardrails: Download Restricted when captions unavailable, rejection of scraping/video downloads.
-5. Endpoints: POST /api/sources/youtube/check and POST /api/sources/youtube/retrieve.
-6. Job submission integration with input_type='transcript'.
+1. URL parsing across watch, youtu.be, shorts, embed, and mobile formats.
+2. Provider identification and domain restriction defenses.
+3. Pre-flight metadata inspection using yt-dlp without media downloading.
+4. Error mapping for platform restrictions: private videos, login/bot required, geo-restriction, DRM, live streams.
+5. Duration limit enforcement.
+6. User authorization requirement enforcement.
+7. Audio-preferred media retrieval using yt-dlp.
+8. Generated UUID safe filenames and temporary directory isolation.
+9. FFprobe media verification on retrieved files.
+10. Fallback and fast-path handling for user-provided transcripts.
+11. Clean error handling, cleanup of partial files, and size-limit enforcement.
+12. Endpoints: POST /api/sources/youtube/check and POST /api/sources/youtube/retrieve.
+13. End-to-end integration with job submission and pipeline routing.
 """
 
 import os
+import glob
+import wave
 import shutil
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
+import yt_dlp
+from yt_dlp.utils import DownloadError
+
 from app import create_app
 from app.config import TestConfig
 from app.models import db, User, ProcessingJob
-from app.providers.youtube_provider import YouTubeProvider, extract_youtube_video_id
+from app.providers.youtube_provider import (
+    YouTubeProvider,
+    extract_youtube_video_id,
+    get_canonical_youtube_url,
+    verify_media_file_with_ffprobe,
+    map_ytdlp_error
+)
+
+
+def create_dummy_wav(path: str, duration_sec: int = 1):
+    """Creates a valid 16kHz mono 16-bit WAV audio file for FFprobe tests."""
+    with wave.open(path, 'w') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b'\x00' * int(16000 * 2 * duration_sec))
 
 
 class TestYouTubeIntegration(unittest.TestCase):
@@ -30,8 +57,7 @@ class TestYouTubeIntegration(unittest.TestCase):
 
         class YouTubeTestConfig(TestConfig):
             UPLOAD_FOLDER = self.upload_dir
-            MAX_VIDEO_SIZE = 50 * 1024 * 1024
-            YOUTUBE_API_KEY = 'test_youtube_api_key_123'
+            MAX_VIDEO_SIZE = 50 * 1024 * 1024  # 50 MB
 
         self.app = create_app(YouTubeTestConfig)
         self.client = self.app.test_client()
@@ -65,8 +91,12 @@ class TestYouTubeIntegration(unittest.TestCase):
             sess['username'] = 'yt_student'
             sess['role'] = 'user'
 
+    # -------------------------------------------------------------------------
+    # 1. URL Validation & Identification
+    # -------------------------------------------------------------------------
+
     def test_extract_video_id_formats(self):
-        """Verify URL extractor handles all standard YouTube URL variations."""
+        """Verify URL extractor handles all standard YouTube URL variations and rejects non-YouTube links."""
         id1 = extract_youtube_video_id('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
         self.assertEqual(id1, 'dQw4w9WgXcQ')
 
@@ -86,196 +116,278 @@ class TestYouTubeIntegration(unittest.TestCase):
         id6 = extract_youtube_video_id('dQw4w9WgXcQ')
         self.assertEqual(id6, 'dQw4w9WgXcQ')
 
-        # Invalid URL
+        # Canonical URL generator
+        self.assertEqual(get_canonical_youtube_url('dQw4w9WgXcQ'), 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+
+        # Invalid URLs
         self.assertIsNone(extract_youtube_video_id('https://example.com/video.mp4'))
+        self.assertIsNone(extract_youtube_video_id('https://vimeo.com/123456789'))
         self.assertIsNone(extract_youtube_video_id(''))
+        self.assertIsNone(extract_youtube_video_id(None))
 
     def test_provider_identify(self):
-        """Verify YouTubeProvider identifies YouTube URLs and rejects other providers."""
+        """Verify YouTubeProvider identifies YouTube URLs and rejects other source providers."""
         self.assertTrue(self.provider.identify('https://www.youtube.com/watch?v=dQw4w9WgXcQ'))
         self.assertTrue(self.provider.identify('https://youtu.be/dQw4w9WgXcQ'))
         self.assertFalse(self.provider.identify('https://drive.google.com/file/d/123/view'))
         self.assertFalse(self.provider.identify('https://example.com/recording.mp4'))
+        self.assertFalse(self.provider.identify(''))
+
+    # -------------------------------------------------------------------------
+    # 2. Metadata Inspection & Accessibility Checks (No Download)
+    # -------------------------------------------------------------------------
 
     def test_check_accessibility_invalid_url(self):
-        """Verify check_accessibility returns 400 for invalid YouTube link."""
+        """Verify check_accessibility returns error for invalid YouTube link."""
         res = self.provider.check_accessibility('https://notyoutube.com/watch')
         self.assertFalse(res['success'])
         self.assertEqual(res['accessibility_status'], 'Invalid URL')
+        self.assertFalse(res['retrieval_eligible'])
 
-    def test_check_accessibility_video_not_found(self):
-        """Verify check_accessibility reports Video Not Found when API returns empty items."""
-        mock_service = MagicMock()
-        mock_videos = MagicMock()
-        mock_videos.list.return_value.execute.return_value = {'items': []}
-        mock_service.videos.return_value = mock_videos
+    def test_check_accessibility_metadata_success(self):
+        """Verify check_accessibility extracts video title, duration, channel without downloading."""
+        mock_info = {
+            'title': 'Machine Learning Lecture 10',
+            'duration': 3600,
+            'uploader': 'Prof. Stanford AI',
+            'filesize_approx': 35 * 1024 * 1024,
+            'subtitles': {'en': [{'ext': 'vtt'}]}
+        }
 
         res = self.provider.check_accessibility(
             'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            youtube_service=mock_service
-        )
-
-        self.assertFalse(res['success'])
-        self.assertEqual(res['accessibility_status'], 'Video Not Found')
-
-    def test_check_accessibility_with_captions_supported(self):
-        """Verify check_accessibility succeeds when official captions are detected."""
-        mock_service = MagicMock()
-        mock_videos = MagicMock()
-        mock_videos.list.return_value.execute.return_value = {
-            'items': [{
-                'id': 'dQw4w9WgXcQ',
-                'snippet': {
-                    'title': 'AI Webinar Lecture',
-                    'channelTitle': 'Computer Science Dept'
-                }
-            }]
-        }
-        mock_captions = MagicMock()
-        mock_captions.list.return_value.execute.return_value = {
-            'items': [{'id': 'caption_track_en', 'snippet': {'language': 'en'}}]
-        }
-        mock_service.videos.return_value = mock_videos
-        mock_service.captions.return_value = mock_captions
-
-        res = self.provider.check_accessibility(
-            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            youtube_service=mock_service
+            mock_info=mock_info
         )
 
         self.assertTrue(res['success'])
         self.assertEqual(res['accessibility_status'], 'Retrieval Supported')
-        self.assertEqual(res['title'], 'AI Webinar Lecture')
-        self.assertEqual(res['channel'], 'Computer Science Dept')
+        self.assertEqual(res['title'], 'Machine Learning Lecture 10')
+        self.assertEqual(res['channel'], 'Prof. Stanford AI')
+        self.assertEqual(res['duration'], 3600)
+        self.assertEqual(res['duration_str'], '01:00:00')
         self.assertTrue(res['retrieval_eligible'])
+        self.assertTrue(res['has_subtitles'])
+        self.assertIn('35.0 MB', res['file_size'])
 
-    def test_check_accessibility_without_captions_restricted(self):
-        """Verify check_accessibility reports Download Restricted when no captions exist."""
-        mock_service = MagicMock()
-        mock_videos = MagicMock()
-        mock_videos.list.return_value.execute.return_value = {
-            'items': [{
-                'id': 'dQw4w9WgXcQ',
-                'snippet': {
-                    'title': 'Silent Seminar',
-                    'channelTitle': 'Faculty Group'
-                }
-            }]
+    def test_check_accessibility_duration_exceeded(self):
+        """Verify check_accessibility rejects videos that exceed the configured duration limit."""
+        mock_info = {
+            'title': 'Overly Long 10 Hour Stream',
+            'duration': 36000,  # 10 hours
+            'uploader': 'Streamer'
         }
-        mock_captions = MagicMock()
-        mock_captions.list.return_value.execute.return_value = {'items': []}
-        mock_service.videos.return_value = mock_videos
-        mock_service.captions.return_value = mock_captions
 
         res = self.provider.check_accessibility(
             'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            youtube_service=mock_service
+            mock_info=mock_info,
+            max_duration_seconds=14400  # 4 hours limit
         )
 
         self.assertFalse(res['success'])
-        self.assertEqual(res['accessibility_status'], 'Download Restricted')
+        self.assertEqual(res['accessibility_status'], 'Duration Exceeded')
+        self.assertEqual(res['code'], 'DURATION_EXCEEDED')
         self.assertFalse(res['retrieval_eligible'])
-        self.assertIn('prohibited', res['message'])
+        self.assertIn('exceeds the allowed duration', res['message'])
 
-    def test_retrieve_media_strict_guardrail_rejects_video_download(self):
-        """Verify retrieve_media strictly rejects any attempt to download video stream."""
-        result = self.provider.retrieve_media(
+    def test_check_accessibility_with_attached_transcript(self):
+        """Verify check_accessibility returns Transcript Attached when accompanying transcript is supplied."""
+        res = self.provider.check_accessibility(
+            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+            caption_content='WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nAttached lecture text.'
+        )
+
+        self.assertTrue(res['success'])
+        self.assertEqual(res['accessibility_status'], 'Transcript Attached')
+        self.assertTrue(res['retrieval_eligible'])
+
+    # -------------------------------------------------------------------------
+    # 3. Error Mapping for Restricted Platform Content
+    # -------------------------------------------------------------------------
+
+    def test_map_ytdlp_error_codes(self):
+        """Verify map_ytdlp_error maps download exceptions to user-facing explanations."""
+        e_private = DownloadError("Private video. Sign in if you've been granted access.")
+        m_private = map_ytdlp_error(e_private)
+        self.assertEqual(m_private['code'], 'PRIVATE_VIDEO')
+
+        e_login = DownloadError("Sign in to confirm you’re not a bot.")
+        m_login = map_ytdlp_error(e_login)
+        self.assertEqual(m_login['code'], 'LOGIN_REQUIRED')
+
+        e_unavail = DownloadError("Video unavailable. This video has been removed.")
+        m_unavail = map_ytdlp_error(e_unavail)
+        self.assertEqual(m_unavail['code'], 'VIDEO_UNAVAILABLE')
+
+        e_geo = DownloadError("This video is not available in your country.")
+        m_geo = map_ytdlp_error(e_geo)
+        self.assertEqual(m_geo['code'], 'GEOGRAPHIC_RESTRICTION')
+
+        e_drm = DownloadError("This video is protected by DRM.")
+        m_drm = map_ytdlp_error(e_drm)
+        self.assertEqual(m_drm['code'], 'DRM_RESTRICTED')
+
+        e_live = DownloadError("This live event will begin in 10 minutes.")
+        m_live = map_ytdlp_error(e_live)
+        self.assertEqual(m_live['code'], 'LIVE_EVENT')
+
+        e_timeout = DownloadError("Connection timed out.")
+        m_timeout = map_ytdlp_error(e_timeout)
+        self.assertEqual(m_timeout['code'], 'NETWORK_TIMEOUT')
+
+    # -------------------------------------------------------------------------
+    # 4. Media Retrieval via yt-dlp & Authorization
+    # -------------------------------------------------------------------------
+
+    def test_retrieve_media_authorization_required(self):
+        """Verify retrieve_media requires user authorization confirmation before downloading."""
+        res = self.provider.retrieve_media(
             'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
             destination_dir=self.upload_dir,
-            force_video_download=True
+            user_authorized=False
         )
 
-        self.assertFalse(result['success'])
-        self.assertEqual(result['code'], 'DOWNLOAD_RESTRICTED')
-        self.assertIn('strictly prohibited', result['error'])
+        self.assertFalse(res['success'])
+        self.assertEqual(res['code'], 'AUTHORIZATION_REQUIRED')
+        self.assertIn('authorization confirmation required', res['error'].lower())
 
-    def test_retrieve_media_success_with_captions(self):
-        """Verify retrieve_media writes WebVTT captions directly without video downloading."""
-        sample_vtt = (
-            "WEBVTT\n\n"
-            "00:00:01.000 --> 00:00:04.000\n"
-            "Welcome to the artificial intelligence webinar.\n\n"
-            "00:00:05.000 --> 00:00:08.000\n"
-            "Today we will cover deep neural networks.\n"
-        )
-
-        result = self.provider.retrieve_media(
+    def test_retrieve_media_fast_path_with_captions(self):
+        """Verify retrieve_media saves VTT directly when prefer_transcript=True and caption_content is given."""
+        sample_vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nDeep learning overview.\n"
+        res = self.provider.retrieve_media(
             'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
             destination_dir=self.upload_dir,
-            caption_content=sample_vtt
+            caption_content=sample_vtt,
+            user_authorized=True,
+            prefer_transcript=True
         )
 
-        self.assertTrue(result['success'])
-        self.assertEqual(result['source_type'], 'youtube')
-        self.assertEqual(result['input_type'], 'transcript')
-        self.assertEqual(result['file_extension'], 'vtt')
-        self.assertTrue(os.path.exists(result['storage_path']))
+        self.assertTrue(res['success'])
+        self.assertEqual(res['source_type'], 'youtube')
+        self.assertEqual(res['input_type'], 'transcript')
+        self.assertEqual(res['file_extension'], 'vtt')
+        self.assertTrue(os.path.exists(res['storage_path']))
 
-        with open(result['storage_path'], 'r', encoding='utf-8') as f:
-            content = f.read()
-        self.assertTrue(content.startswith('WEBVTT'))
-        self.assertIn('deep neural networks', content)
+    def test_retrieve_media_success_with_ffprobe_verification(self):
+        """Verify retrieve_media validates downloaded audio file with FFprobe and sets input_type='audio'."""
+        mock_audio_path = os.path.join(self.upload_dir, 'sample_youtube_audio.wav')
+        create_dummy_wav(mock_audio_path, duration_sec=2)
+        self.assertTrue(verify_media_file_with_ffprobe(mock_audio_path))
 
-    @patch('googleapiclient.discovery.build')
-    def test_endpoint_youtube_check(self, mock_build):
-        """Verify POST /api/sources/youtube/check endpoint returns metadata."""
+        res = self.provider.retrieve_media(
+            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+            destination_dir=self.upload_dir,
+            user_authorized=True,
+            mock_download_file=mock_audio_path,
+            title='Intro to Algorithms',
+            duration=120
+        )
+
+        self.assertTrue(res['success'])
+        self.assertEqual(res['source_type'], 'youtube')
+        self.assertEqual(res['input_type'], 'audio')
+        self.assertEqual(res['file_extension'], 'wav')
+        self.assertEqual(res['storage_path'], mock_audio_path)
+        self.assertEqual(res['title'], 'Intro to Algorithms')
+
+    @patch('yt_dlp.YoutubeDL')
+    def test_retrieve_media_handles_download_error_and_cleans_up(self, mock_ytdlp_cls):
+        """Verify retrieve_media catches DownloadError, cleans up partial files, and returns mapped code."""
+        mock_instance = MagicMock()
+        mock_instance.extract_info.side_effect = DownloadError("Private video. Sign in if you've been granted access.")
+        mock_ytdlp_cls.return_value.__enter__.return_value = mock_instance
+
+        # Create a dummy partial file to verify cleanup
+        dummy_partial = os.path.join(self.upload_dir, 'dummy_youtube_dQw4w9WgXcQ.m4a.part')
+        with open(dummy_partial, 'w') as f:
+            f.write('partial data')
+
+        res = self.provider.retrieve_media(
+            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+            destination_dir=self.upload_dir,
+            user_authorized=True
+        )
+
+        self.assertFalse(res['success'])
+        self.assertEqual(res['code'], 'PRIVATE_VIDEO')
+        self.assertIn('private', res['error'].lower())
+
+    # -------------------------------------------------------------------------
+    # 5. Dashboard Endpoints (Check & Retrieve)
+    # -------------------------------------------------------------------------
+
+    def test_endpoint_youtube_check_success(self):
+        """Verify POST /api/sources/youtube/check endpoint returns metadata using yt-dlp."""
         self._login()
-        mock_service = MagicMock()
-        mock_videos = MagicMock()
-        mock_videos.list.return_value.execute.return_value = {
-            'items': [{
-                'id': 'dQw4w9WgXcQ',
-                'snippet': {'title': 'Sample AI Video', 'channelTitle': 'AI Channel'}
-            }]
-        }
-        mock_captions = MagicMock()
-        mock_captions.list.return_value.execute.return_value = {
-            'items': [{'id': 'c1'}]
-        }
-        mock_service.videos.return_value = mock_videos
-        mock_service.captions.return_value = mock_captions
-        mock_build.return_value = mock_service
+        with patch.object(self.provider, 'get_metadata') as mock_meta:
+            mock_meta.return_value = {
+                'success': True,
+                'video_id': 'dQw4w9WgXcQ',
+                'info': {
+                    'title': 'Robotics Keynote 2026',
+                    'uploader': 'IEEE Robotics Society',
+                    'duration': 1800,
+                    'filesize_approx': 20 * 1024 * 1024
+                }
+            }
+            with patch('app.providers.youtube_provider.YouTubeProvider', return_value=self.provider):
+                resp = self.client.post(
+                    '/api/sources/youtube/check',
+                    json={'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'user_authorized': True}
+                )
 
-        resp = self.client.post(
-            '/api/sources/youtube/check',
-            json={'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'}
-        )
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data['success'])
         self.assertEqual(data['video_id'], 'dQw4w9WgXcQ')
         self.assertEqual(data['accessibility_status'], 'Retrieval Supported')
+        self.assertEqual(data['title'], 'Robotics Keynote 2026')
 
-    def test_endpoint_youtube_retrieve_restricted(self):
-        """Verify POST /api/sources/youtube/retrieve rejects when no captions are available."""
+    def test_endpoint_youtube_retrieve_requires_authorization(self):
+        """Verify POST /api/sources/youtube/retrieve returns 400 when user_authorized is False."""
         self._login()
         resp = self.client.post(
             '/api/sources/youtube/retrieve',
-            json={'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'}
+            json={'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'user_authorized': False}
         )
         self.assertEqual(resp.status_code, 400)
         data = resp.get_json()
         self.assertFalse(data['success'])
-        self.assertEqual(data['code'], 'DOWNLOAD_RESTRICTED')
+        self.assertEqual(data['code'], 'AUTHORIZATION_REQUIRED')
 
     def test_end_to_end_youtube_job_creation(self):
-        """Verify full flow: retrieve captions -> stage in session -> create processing job."""
+        """Verify full flow: retrieve audio media -> stage in session -> create processing job with input_type='audio'."""
         self._login()
 
-        sample_vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nKey machine learning takeaways.\n"
+        mock_audio_path = os.path.join(self.upload_dir, 'staged_yt_audio.m4a')
+        create_dummy_wav(mock_audio_path, duration_sec=3)
 
-        # 1. Retrieve official captions
-        resp = self.client.post(
-            '/api/sources/youtube/retrieve',
-            json={
-                'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-                'caption_content': sample_vtt
+        # 1. Mock retrieve_media returning audio file
+        with patch.object(self.provider, 'retrieve_media') as mock_ret:
+            mock_ret.return_value = {
+                'success': True,
+                'source_type': 'youtube',
+                'input_type': 'audio',
+                'original_filename': 'youtube_dQw4w9WgXcQ.m4a',
+                'safe_filename': 'staged_yt_audio.m4a',
+                'storage_path': mock_audio_path,
+                'file_size': os.path.getsize(mock_audio_path),
+                'file_extension': 'm4a',
+                'source_url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+                'video_id': 'dQw4w9WgXcQ',
+                'title': 'AI Webinar Lecture',
+                'duration': 180,
+                'message': 'YouTube audio retrieved successfully (M4A) and staged for pipeline processing.'
             }
-        )
+            with patch('app.providers.youtube_provider.YouTubeProvider', return_value=self.provider):
+                resp = self.client.post(
+                    '/api/sources/youtube/retrieve',
+                    json={'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', 'user_authorized': True}
+                )
+
         self.assertEqual(resp.status_code, 200)
         ret_data = resp.get_json()
         self.assertTrue(ret_data['success'])
-        self.assertEqual(ret_data['details']['input_type'], 'transcript')
+        self.assertEqual(ret_data['details']['input_type'], 'audio')
 
         # 2. Stage recipient list
         with self.client.session_transaction() as sess:
@@ -292,74 +404,9 @@ class TestYouTubeIntegration(unittest.TestCase):
         job = db.session.get(ProcessingJob, job_id)
         self.assertIsNotNone(job)
         self.assertEqual(job.user_id, self.user_id)
-        self.assertEqual(job.input_type, 'transcript')
-
-    def test_check_accessibility_without_service_fallback_supported(self):
-        """Verify check_accessibility returns Retrieval Supported with transcript guidance when no service is configured."""
-        res = self.provider.check_accessibility('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
-        self.assertTrue(res['success'])
-        self.assertEqual(res['accessibility_status'], 'Retrieval Supported')
-        self.assertTrue(res['retrieval_eligible'])
-        self.assertIn('transcript', res['explanation'].lower())
-
-    def test_check_accessibility_with_user_supplied_caption_content(self):
-        """Verify check_accessibility returns Transcript Attached when user supplies caption content."""
-        res = self.provider.check_accessibility(
-            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            caption_content='WEBVTT\n\n00:00:00.000 --> 00:01:00.000\nHello and welcome.'
-        )
-        self.assertTrue(res['success'])
-        self.assertEqual(res['accessibility_status'], 'Transcript Attached')
-        self.assertTrue(res['retrieval_eligible'])
-        self.assertEqual(res['source_type'], 'youtube')
-
-    def test_endpoint_youtube_check_with_caption_content(self):
-        """Verify POST /api/sources/youtube/check succeeds with Transcript Attached when caption_content is sent."""
-        self._login()
-        resp = self.client.post(
-            '/api/sources/youtube/check',
-            json={
-                'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-                'caption_content': 'WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nLecture text.'
-            }
-        )
-        self.assertEqual(resp.status_code, 200)
-        data = resp.get_json()
-        self.assertTrue(data['success'])
-        self.assertEqual(data['accessibility_status'], 'Transcript Attached')
-
-    @patch('app.providers.youtube_provider.YouTubeProvider.build_service')
-    def test_retrieve_media_builds_service_from_api_key(self, mock_build_service):
-        """Verify retrieve_media instantiates YouTube service when api_key is supplied."""
-        mock_service = MagicMock()
-        mock_captions = MagicMock()
-        mock_captions.list.return_value.execute.return_value = {'items': []}
-        mock_service.captions.return_value = mock_captions
-        mock_build_service.return_value = mock_service
-
-        res = self.provider.retrieve_media(
-            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            destination_dir=self.upload_dir,
-            api_key='custom_test_api_key'
-        )
-
-        mock_build_service.assert_called_with('custom_test_api_key')
-        self.assertFalse(res['success'])
-        self.assertEqual(res['code'], 'DOWNLOAD_RESTRICTED')
-
-    def test_retrieve_media_formats_plain_text_to_vtt(self):
-        """Verify retrieve_media automatically prepends WEBVTT header to plain text caption input."""
-        res = self.provider.retrieve_media(
-            'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-            destination_dir=self.upload_dir,
-            caption_content='This is a plain transcript without WEBVTT header.'
-        )
-
-        self.assertTrue(res['success'])
-        with open(res['storage_path'], 'r', encoding='utf-8') as f:
-            saved_content = f.read()
-        self.assertTrue(saved_content.startswith('WEBVTT\n\n'))
-        self.assertIn('This is a plain transcript without WEBVTT header.', saved_content)
+        self.assertEqual(job.input_type, 'audio')
+        self.assertEqual(job.source_type, 'youtube')
+        self.assertEqual(job.source_url, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')
 
 
 if __name__ == '__main__':

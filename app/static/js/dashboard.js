@@ -63,6 +63,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const btnCheckDirectAccessibility = document.getElementById('btnCheckDirectAccessibility');
     const youtubeUrlInput = document.getElementById('youtubeUrlInput');
     const btnCheckYouTubeAccessibility = document.getElementById('btnCheckYouTubeAccessibility');
+    const youtubeAuthConfirmCheck = document.getElementById('youtubeAuthConfirmCheck');
     const youtubeCaptionFileInput = document.getElementById('youtubeCaptionFileInput');
     const youtubeTranscriptText = document.getElementById('youtubeTranscriptText');
     const youtubeTranscriptAttachedNotice = document.getElementById('youtubeTranscriptAttachedNotice');
@@ -260,17 +261,44 @@ document.addEventListener('DOMContentLoaded', function () {
                 filename: filename,
                 file_size: fileSize
             };
-            if (sourceType === 'youtube' && state.youtubeCaptionContent) {
-                checkPayload.caption_content = state.youtubeCaptionContent;
+            if (sourceType === 'youtube') {
+                if (youtubeAuthConfirmCheck) {
+                    checkPayload.user_authorized = youtubeAuthConfirmCheck.checked;
+                }
+                if (state.youtubeCaptionContent) {
+                    checkPayload.caption_content = state.youtubeCaptionContent;
+                }
             }
 
             const response = await fetch('/api/sources/check-accessibility', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
                 body: JSON.stringify(checkPayload)
             });
 
-            const result = await response.json();
+            const contentType = response.headers.get('content-type') || '';
+            let result;
+            if (contentType.includes('application/json')) {
+                result = await response.json();
+            } else {
+                if (webinarLoadingSpinner) webinarLoadingSpinner.classList.add('d-none');
+                showWebinarError(
+                    'Server Error',
+                    `Server returned an invalid response (HTTP ${response.status}). Please check server logs or run: pip install yt-dlp`
+                );
+                if (accessibilityReportCard) accessibilityReportCard.classList.add('d-none');
+                if (webinarStatusBadge) {
+                    webinarStatusBadge.className = 'badge bg-danger-subtle text-danger rounded-pill px-3 py-1';
+                    webinarStatusBadge.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> Server Error (${response.status})`;
+                }
+                state.accessibilityReport = null;
+                updatePrerequisites();
+                return;
+            }
             if (webinarLoadingSpinner) webinarLoadingSpinner.classList.add('d-none');
 
             if (!response.ok || !result.success) {
@@ -1662,38 +1690,68 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
         } else if (state.webinarUpload && state.webinarUpload.source_type === 'youtube' && state.webinarUpload.is_remote) {
-            btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Retrieving Official Captions from YouTube...`;
+            const isAuthorized = youtubeAuthConfirmCheck ? youtubeAuthConfirmCheck.checked : true;
+            if (!isAuthorized && !state.webinarUpload.caption_content) {
+                btnConfirmSubmitJob.disabled = false;
+                btnCloseModal.disabled = false;
+                btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
+                modalJobErrorAlert.classList.remove('d-none');
+                modalErrorTitle.textContent = 'Authorization Required';
+                modalErrorMessage.textContent = 'Please check the authorization confirmation to confirm you have the rights to retrieve and process this content.';
+                return;
+            }
+
+            btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Retrieving Media via yt-dlp...`;
             try {
                 const retResp = await fetch('/api/sources/youtube/retrieve', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
                     body: JSON.stringify({
                         url: state.webinarUpload.source_url,
-                        caption_content: state.webinarUpload.caption_content || state.youtubeCaptionContent
+                        caption_content: state.webinarUpload.caption_content || state.youtubeCaptionContent,
+                        user_authorized: isAuthorized
                     })
                 });
-                const retData = await retResp.json();
+                const retContentType = retResp.headers.get('content-type') || '';
+                let retData;
+                if (retContentType.includes('application/json')) {
+                    retData = await retResp.json();
+                } else {
+                    retData = {
+                        success: false,
+                        message: `Server returned invalid response (HTTP ${retResp.status}). Please check server logs.`
+                    };
+                }
                 if (!retResp.ok || !retData.success) {
                     btnConfirmSubmitJob.disabled = false;
                     btnCloseModal.disabled = false;
                     btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
                     modalJobErrorAlert.classList.remove('d-none');
-                    modalErrorTitle.textContent = 'YouTube Retrieval Restricted';
-                    modalErrorMessage.textContent = retData.message || 'Automated video downloading from YouTube is prohibited. No official captions available. Please upload the recording or transcript manually.';
+                    modalErrorTitle.textContent = 'YouTube Retrieval Error';
+                    modalErrorMessage.textContent = retData.message || 'Unable to retrieve YouTube media. You can upload an authorized MP4 recording or transcript manually.';
                     if (modalRecoveryActions) {
                         modalRecoveryActions.classList.remove('d-none');
                     }
                     return;
                 }
+                btnConfirmSubmitJob.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>Verifying Media with FFprobe...`;
                 state.webinarUpload.is_remote = false;
                 state.webinarUpload.storage_path = retData.details.storage_path;
+                state.webinarUpload.input_type = retData.details.input_type || state.webinarUpload.input_type;
+                state.webinarUpload.original_filename = retData.details.original_filename || state.webinarUpload.original_filename;
+                state.webinarUpload.file_size = retData.details.file_size || state.webinarUpload.file_size;
+                state.webinarUpload.file_extension = retData.details.file_extension || state.webinarUpload.file_extension;
             } catch (err) {
                 btnConfirmSubmitJob.disabled = false;
                 btnCloseModal.disabled = false;
                 btnConfirmSubmitJob.innerHTML = `<i class="bi bi-play-fill fs-5"></i> Start Processing & Deliver Email`;
                 modalJobErrorAlert.classList.remove('d-none');
                 modalErrorTitle.textContent = 'Network Retrieval Error';
-                modalErrorMessage.textContent = err.message || 'Network error retrieving YouTube captions.';
+                modalErrorMessage.textContent = err.message || 'Network error retrieving YouTube media.';
                 return;
             }
         }

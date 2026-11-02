@@ -27,4 +27,17 @@ def create_app(config_class=Config):
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(admin_bp)
 
+    from flask import request, jsonify
+
+    @app.errorhandler(500)
+    def handle_500(e):
+        if request.path.startswith('/api/'):
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'accessibility_status': 'Server Error',
+                'message': 'An internal server error occurred while processing the request.'
+            }), 500
+        return e
+
     return app

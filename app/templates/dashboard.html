@@ -165,21 +165,32 @@
                         <div class="p-3 bg-light rounded-3 border mb-3">
                             <div class="d-flex align-items-center gap-2 mb-2">
                                 <i class="bi bi-youtube fs-4 text-danger"></i>
-                                <h6 class="fw-bold mb-0">YouTube Video Link</h6>
+                                <h6 class="fw-bold mb-0">YouTube Media Retrieval (yt-dlp)</h6>
                             </div>
                             <p class="text-muted small mb-3">
-                                Enter a public or unlisted YouTube video URL. Official metadata and permitted captions will be inspected. <em>Unauthorized video downloading or stream scraping is strictly prohibited.</em>
+                                Enter a public or unlisted YouTube video URL. Where retrieval is permitted, video information is inspected and media/audio is retrieved for transcription and summarization.
                             </p>
                             <div class="input-group mb-2">
                                 <span class="input-group-text bg-white"><i class="bi bi-play-btn text-danger"></i></span>
                                 <input type="url" id="youtubeUrlInput" class="form-control" placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/...">
                                 <button type="button" id="btnCheckYouTubeAccessibility" class="btn btn-danger px-3">
-                                    <i class="bi bi-youtube me-1"></i> Check Accessibility
+                                    <i class="bi bi-youtube me-1"></i> Check Video Info
                                 </button>
                             </div>
-                            <span class="text-muted small d-block">
+                            <span class="text-muted small d-block mb-2">
                                 <i class="bi bi-info-circle me-1"></i> Supports <code>watch?v=</code>, <code>youtu.be/</code>, and <code>/shorts/</code> formats
                             </span>
+
+                            <!-- User Authorization Confirmation Checkbox -->
+                            <div class="form-check p-2.5 bg-white rounded border mb-3">
+                                <input class="form-check-input ms-0 me-2" type="checkbox" id="youtubeAuthConfirmCheck" value="1">
+                                <label class="form-check-label small fw-semibold text-dark" for="youtubeAuthConfirmCheck">
+                                    <i class="bi bi-shield-check text-success me-1"></i> Content Rights & Authorization Confirmation
+                                </label>
+                                <div class="text-muted small ps-4 mt-1" style="font-size: 0.76rem;">
+                                    I confirm that I have the necessary rights, permissions, or authorization to retrieve and process this YouTube content for educational summary generation.
+                                </div>
+                            </div>
 
                             <!-- YouTube Caption / Transcript Fallback Section -->
                             <div id="youtubeTranscriptFallbackSection" class="mt-3 pt-3 border-top">

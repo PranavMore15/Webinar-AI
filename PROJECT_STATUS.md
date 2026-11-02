@@ -226,18 +226,19 @@ All existing manual upload options (MP4, TXT, VTT) and CSV email validation mech
 | **Prompt A2: Direct Media Retrieval** | **COMPLETED** | Implemented SSRF defense engine (`app/utils/ssrf.py`) blocking private RFC 1918, loopback, link-local, and cloud metadata IPs with redirect re-validation. Implemented `DirectMediaProvider` (`app/providers/direct_provider.py`) with streaming byte-limit enforcement (`MAX_VIDEO_SIZE`), container signature verification (MP4/M4A `ftyp`, MP3 ID3/MPEG, WAV RIFF), and endpoints (`POST /api/sources/direct/check`, `POST /api/sources/direct/retrieve`). Added 15 tests in `test_direct_media_retrieval.py`. |
 | **Prompt A3: Local File & Folder Selection** | **COMPLETED** | Implemented browser-supported local file and directory selection (`webkitdirectory`) with media filtering (`.mp4`, `.mp3`, `.wav`, `.m4a`), folder media discovery list, explicit file selection, browser fallback notice, `LocalMediaProvider` (`app/providers/local_provider.py`), and endpoint `POST /api/sources/local/upload`. Added 15 tests in `test_local_selection.py`. |
 | **Prompt A4: Google Drive Integration** | **COMPLETED** | Implemented Google OAuth 2.0 flow (`/auth/gdrive/connect`, `/auth/gdrive/callback`) with `drive.readonly` scope and CSRF state verification. Implemented `GDriveMediaProvider` (`app/providers/gdrive_provider.py`) using official `google-api-python-client` with metadata inspection, error handling (401, 403, 404, 429, Google Docs, `canDownload=False`), streaming binary retrieval, and disconnect endpoint (`/api/sources/gdrive/disconnect`). Added 16 tests in `test_gdrive_integration.py`. |
-| **Prompt A5: YouTube Integration** | **COMPLETED** | Implemented `YouTubeProvider` (`app/providers/youtube_provider.py`) parsing watch, youtu.be, shorts, and embed URLs. Implemented official YouTube Data API v3 metadata query, official caption ingestion directly to pipeline, and strict non-bypass guardrails rejecting video stream scraping. Endpoints: `POST /api/sources/youtube/check` and `POST /api/sources/youtube/retrieve`. Added 11 tests in `test_youtube_integration.py`. |
+| **Prompt A5: YouTube Integration (yt-dlp)** | **COMPLETED** | Implemented `YouTubeProvider` (`app/providers/youtube_provider.py`) using `yt-dlp` for metadata inspection and audio-preferred media retrieval. Enforced user rights confirmation, size/duration/timeout limits, FFprobe verification, and clean error handling (private, login required, geo-restricted, DRM). Added 14 tests in `test_youtube_integration.py`. |
 | **Prompt A6: Pipeline Integration** | **COMPLETED** | Extended MySQL `ProcessingJob` model with `source_type`, `source_url`, `retrieval_status`, and `retrieval_error` with migration script `migrations/add_retrieval_columns.py`. Supported audio-only direct routing to Whisper, failure isolation halting pipeline on retrieval error, and stage idempotency guards. Added 5 tests in `test_pipeline_integration_a6.py`. |
 | **Prompt A7: Testing & Documentation** | **COMPLETED** | Executed 26-scenario verification matrix across 76 new automated tests. Full test suite: **243 passing tests in 92.26s (0 failures, 0 errors, 0 regressions)**. Updated `README.md` and `PROJECT_STATUS.md`. |
 
 ### 7.3 External Dependencies & Packages
-- **Planned New Dependencies (To be installed in `.venv` when approved)**:
-  - `google-api-python-client>=2.100.0` (Official Google Drive & YouTube Data API client)
+- **Dependencies Installed in `.venv`**:
+  - `yt-dlp>=2026.10.26` (YouTube media retrieval and metadata provider)
+  - `google-api-python-client>=2.100.0` (Official Google Drive API client)
   - `google-auth-oauthlib>=1.1.0` (Official Google OAuth 2.0 user authorization flow)
   - `requests>=2.31.0` (Underlying HTTP client, hardened via custom adapter / SSRF socket hooks)
-- **Strictly Prohibited Packages**:
-  - `yt-dlp`, `youtube-dl`, `pytube` (Unauthorized video downloaders/scrapers strictly rejected)
+- **Strictly Prohibited Practices**:
   - Headless browser scrapers (Selenium, Playwright) for DRM/paywall circumvention
+  - Cookie or credential scraping for unauthorized private content
 
 ### 7.4 API Requirements & Authentication
 1. **Google Drive API v3**:

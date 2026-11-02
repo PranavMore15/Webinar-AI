@@ -883,9 +883,10 @@ The dashboard Section A is extended into a unified **Webinar Content Source** pa
    - Enforces strict streaming limits and content container inspection.
 2. **Option 2: YouTube**:
    - Recognizes standard YouTube watch URLs (`youtube.com/watch?v=...`), shortlinks (`youtu.be/...`), and Shorts (`youtube.com/shorts/...`).
-   - Queries official YouTube Data API v3 for metadata and permitted captions/transcripts.
-   - Strictly prohibits unauthorized downloading, scraping, `yt-dlp`, or DRM bypass.
-   - Routes permitted transcripts directly to summarization; reports limitations when automated retrieval is unavailable.
+   - Uses `yt-dlp` for pre-flight metadata inspection (title, duration, channel) without downloading media.
+   - For permitted and user-authorized content, retrieves audio-only streams (e.g. M4A/MP3) for Whisper transcription, saving bandwidth and storage.
+   - Strictly prohibits DRM bypass, login/cookie scraping, or private content circumvention; requires explicit user rights confirmation.
+   - Supports accompanying transcript upload/attachment and manual upload fallback when automated retrieval is unavailable.
 3. **Option 3: Google Drive**:
    - Accepts Google Drive sharing URLs and extracts file IDs safely.
    - Implements official Google OAuth 2.0 flow with narrow `drive.readonly` scope.

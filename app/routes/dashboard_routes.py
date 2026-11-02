@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 import urllib.parse
 from flask import Blueprint, render_template, redirect, url_for, session, flash, request, jsonify, current_app, send_file
 from app.models import db, User, ProcessingJob, JobRecipient
@@ -7,6 +8,7 @@ from app.services import csv_service, media_service, pdf_service, email_service,
 from app.utils.auth import login_required, user_required, EMAIL_REGEX
 
 dashboard_bp = Blueprint('dashboard', __name__)
+logger = logging.getLogger(__name__)
 
 @dashboard_bp.route('/')
 def root():
@@ -143,101 +145,111 @@ def check_source_accessibility():
     and returns accessibility status, eligibility, and instructions without
     initiating a full download or processing job.
     """
-    import urllib.parse
-    data = request.get_json(silent=True) or request.form or {}
-    source_type = data.get('source_type', '').strip().lower()
-    source_url = data.get('source_url', '').strip()
-    filename = data.get('filename', '').strip()
+    try:
+        import urllib.parse
+        data = request.get_json(silent=True) or request.form or {}
+        source_type = data.get('source_type', '').strip().lower()
+        source_url = data.get('source_url', '').strip()
+        filename = data.get('filename', '').strip()
 
-    if not source_type:
+        if not source_type:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'accessibility_status': 'Source Not Selected',
+                'message': 'Source type is required.'
+            }), 400
+
+        if source_type == 'direct':
+            if not source_url:
+                return jsonify({
+                    'success': False,
+                    'status': 'error',
+                    'accessibility_status': 'Invalid URL',
+                    'message': 'Invalid link. Please enter a valid video or audio link.'
+                }), 400
+
+            from app.providers.direct_provider import DirectMediaProvider
+            provider = DirectMediaProvider()
+            result = provider.check_accessibility(source_url)
+            status_code = 200 if result.get('success') else 400
+            return jsonify(result), status_code
+
+        elif source_type == 'youtube':
+            if not source_url:
+                return jsonify({
+                    'success': False,
+                    'status': 'error',
+                    'accessibility_status': 'Invalid URL',
+                    'message': 'Please provide a YouTube video URL.'
+                }), 400
+
+            caption_content = data.get('caption_content')
+            if not caption_content and request.files:
+                caption_file = request.files.get('caption_file') or request.files.get('file')
+                if caption_file:
+                    caption_content = caption_file.read().decode('utf-8', errors='ignore')
+
+            user_authorized = bool(data.get('user_authorized', False))
+
+            from app.providers.youtube_provider import YouTubeProvider
+            provider = YouTubeProvider()
+            result = provider.check_accessibility(
+                source_reference=source_url,
+                caption_content=caption_content,
+                user_authorized=user_authorized
+            )
+            status_code = 200 if result.get('success') else 400
+            return jsonify(result), status_code
+
+        elif source_type == 'gdrive':
+            if not source_url:
+                return jsonify({
+                    'success': False,
+                    'status': 'error',
+                    'accessibility_status': 'Invalid URL',
+                    'message': 'Please provide a Google Drive file link.'
+                }), 400
+
+            from app.providers.gdrive_provider import GDriveMediaProvider
+            provider = GDriveMediaProvider()
+            result = provider.check_accessibility(
+                source_reference=source_url,
+                session_token=session.get('gdrive_token'),
+                max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+            )
+            status_code = 200 if result.get('success') else 400
+            return jsonify(result), status_code
+
+        elif source_type in ('local_file', 'local_folder'):
+            from app.providers.local_provider import LocalMediaProvider
+            provider = LocalMediaProvider()
+            result = provider.check_accessibility(
+                source_reference=filename or source_url or 'selected_recording',
+                filename=filename,
+                file_size=data.get('file_size'),
+                file_size_formatted=data.get('file_size') if isinstance(data.get('file_size'), str) else None,
+                source_type=source_type,
+                max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
+            )
+            status_code = 200 if result.get('success') else 400
+            return jsonify(result), status_code
+
+        else:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'accessibility_status': 'Unsupported Source',
+                'message': f"Source type '{source_type}' is not supported by WebinarAI."
+            }), 400
+    except Exception as e:
+        logger.exception("Unhandled error in check_source_accessibility: %s", str(e))
         return jsonify({
             'success': False,
             'status': 'error',
-            'accessibility_status': 'Source Not Selected',
-            'message': 'Source type is required.'
-        }), 400
-
-    if source_type == 'direct':
-        if not source_url:
-            return jsonify({
-                'success': False,
-                'status': 'error',
-                'accessibility_status': 'Invalid URL',
-                'message': 'Invalid link. Please enter a valid video or audio link.'
-            }), 400
-
-        from app.providers.direct_provider import DirectMediaProvider
-        provider = DirectMediaProvider()
-        result = provider.check_accessibility(source_url)
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
-
-    elif source_type == 'youtube':
-        if not source_url:
-            return jsonify({
-                'success': False,
-                'status': 'error',
-                'accessibility_status': 'Invalid URL',
-                'message': 'Please provide a YouTube video URL.'
-            }), 400
-
-        caption_content = data.get('caption_content')
-        if not caption_content and request.files:
-            caption_file = request.files.get('caption_file') or request.files.get('file')
-            if caption_file:
-                caption_content = caption_file.read().decode('utf-8', errors='ignore')
-
-        from app.providers.youtube_provider import YouTubeProvider
-        provider = YouTubeProvider()
-        api_key = current_app.config.get('YOUTUBE_API_KEY')
-        result = provider.check_accessibility(
-            source_reference=source_url,
-            api_key=api_key,
-            caption_content=caption_content
-        )
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
-
-    elif source_type == 'gdrive':
-        if not source_url:
-            return jsonify({
-                'success': False,
-                'status': 'error',
-                'accessibility_status': 'Invalid URL',
-                'message': 'Please provide a Google Drive file link.'
-            }), 400
-
-        from app.providers.gdrive_provider import GDriveMediaProvider
-        provider = GDriveMediaProvider()
-        result = provider.check_accessibility(
-            source_reference=source_url,
-            session_token=session.get('gdrive_token'),
-            max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
-        )
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
-
-    elif source_type in ('local_file', 'local_folder'):
-        from app.providers.local_provider import LocalMediaProvider
-        provider = LocalMediaProvider()
-        result = provider.check_accessibility(
-            source_reference=filename or source_url or 'selected_recording',
-            filename=filename,
-            file_size=data.get('file_size'),
-            file_size_formatted=data.get('file_size') if isinstance(data.get('file_size'), str) else None,
-            source_type=source_type,
-            max_size_bytes=current_app.config.get('MAX_VIDEO_SIZE', 250 * 1024 * 1024)
-        )
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
-
-    else:
-        return jsonify({
-            'success': False,
-            'status': 'error',
-            'accessibility_status': 'Unsupported Source',
-            'message': f"Source type '{source_type}' is not supported by WebinarAI."
-        }), 400
+            'accessibility_status': 'Server Error',
+            'message': f"Error performing accessibility check: {str(e)}"
+        }), 500
 
 @dashboard_bp.route('/api/sources/direct/check', methods=['POST'])
 @user_required
@@ -503,99 +515,126 @@ def gdrive_retrieve():
 @dashboard_bp.route('/api/sources/youtube/check', methods=['POST'])
 @user_required
 def youtube_check():
-    """Pre-flight accessibility and metadata inspection for YouTube video."""
-    from app.providers.youtube_provider import YouTubeProvider
-    data = request.get_json(silent=True) or request.form or {}
-    url = data.get('url', '').strip()
+    """Pre-flight accessibility and metadata inspection for YouTube video using yt-dlp."""
+    try:
+        from app.providers.youtube_provider import YouTubeProvider
+        data = request.get_json(silent=True) or request.form or {}
+        url = data.get('url', '').strip()
+        user_authorized = bool(data.get('user_authorized', False))
 
-    if not url:
+        if not url:
+            return jsonify({
+                'success': False,
+                'accessibility_status': 'Invalid URL',
+                'message': 'YouTube video URL is required.'
+            }), 400
+
+        caption_content = data.get('caption_content')
+        if not caption_content and request.files:
+            caption_file = request.files.get('caption_file') or request.files.get('file')
+            if caption_file:
+                caption_content = caption_file.read().decode('utf-8', errors='ignore')
+
+        provider = YouTubeProvider()
+        result = provider.check_accessibility(
+            source_reference=url,
+            caption_content=caption_content,
+            user_authorized=user_authorized
+        )
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.exception("Unhandled error in youtube_check: %s", str(e))
         return jsonify({
             'success': False,
-            'accessibility_status': 'Invalid URL',
-            'message': 'YouTube video URL is required.'
-        }), 400
-
-    caption_content = data.get('caption_content')
-    if not caption_content and request.files:
-        caption_file = request.files.get('caption_file') or request.files.get('file')
-        if caption_file:
-            caption_content = caption_file.read().decode('utf-8', errors='ignore')
-
-    provider = YouTubeProvider()
-    api_key = current_app.config.get('YOUTUBE_API_KEY')
-    result = provider.check_accessibility(
-        source_reference=url,
-        api_key=api_key,
-        caption_content=caption_content
-    )
-    status_code = 200 if result.get('success') else 400
-    return jsonify(result), status_code
+            'accessibility_status': 'Server Error',
+            'message': f"Error inspecting YouTube video: {str(e)}"
+        }), 500
 
 
 @dashboard_bp.route('/api/sources/youtube/retrieve', methods=['POST'])
 @user_required
 def youtube_retrieve():
     """
-    Retrieves official YouTube captions/transcript.
-    Refuses unauthorized video downloading. Stages transcript in session.
+    Retrieves YouTube media (preferring audio) using yt-dlp for authorized content.
+    Enforces user authorization confirmation, duration/size limits, and stages in session.
     """
-    from app.providers.youtube_provider import YouTubeProvider
-    data = request.get_json(silent=True) or request.form or {}
-    url = data.get('url', '').strip()
+    try:
+        from app.providers.youtube_provider import YouTubeProvider
+        data = request.get_json(silent=True) or request.form or {}
+        url = data.get('url', '').strip()
+        user_authorized = bool(data.get('user_authorized', False))
 
-    if not url:
+        if not url:
+            return jsonify({
+                'success': False,
+                'message': 'YouTube URL is required for retrieval.'
+            }), 400
+
+        if not user_authorized:
+            return jsonify({
+                'success': False,
+                'message': 'User authorization confirmation required. Please confirm you have the necessary rights to retrieve and process this content.',
+                'code': 'AUTHORIZATION_REQUIRED'
+            }), 400
+
+        caption_content = data.get('caption_content')
+        if not caption_content and request.files:
+            caption_file = request.files.get('caption_file') or request.files.get('file')
+            if caption_file:
+                caption_content = caption_file.read().decode('utf-8', errors='ignore')
+
+        provider = YouTubeProvider()
+        upload_folder = current_app.config.get('UPLOAD_FOLDER')
+        max_size = current_app.config.get('MAX_VIDEO_SIZE')
+
+        result = provider.retrieve_media(
+            source_reference=url,
+            destination_dir=upload_folder,
+            max_size_bytes=max_size,
+            caption_content=caption_content,
+            user_authorized=user_authorized
+        )
+
+        if not result.get('success'):
+            return jsonify({
+                'success': False,
+                'message': result.get('error', 'YouTube media retrieval failed.'),
+                'code': result.get('code')
+            }), 400
+
+        # Clean up previous webinar file in current session if replaced
+        previous_upload = session.get('current_webinar_upload')
+        if previous_upload and previous_upload.get('storage_path'):
+            media_service.delete_uploaded_file(previous_upload['storage_path'])
+
+        # Stage retrieved media in session
+        session['current_webinar_upload'] = {
+            'source_type': 'youtube',
+            'input_type': result['input_type'],
+            'original_filename': result['original_filename'],
+            'safe_filename': result['safe_filename'],
+            'storage_path': result['storage_path'],
+            'file_size': result['file_size'],
+            'file_extension': result['file_extension'],
+            'source_url': url,
+            'title': result.get('title'),
+            'duration': result.get('duration')
+        }
+        session.modified = True
+
+        return jsonify({
+            'success': True,
+            'message': result.get('message', 'YouTube media retrieved and staged for processing.'),
+            'details': session['current_webinar_upload']
+        }), 200
+    except Exception as e:
+        logger.exception("Unhandled error in youtube_retrieve: %s", str(e))
         return jsonify({
             'success': False,
-            'message': 'YouTube URL is required for retrieval.'
-        }), 400
-
-    caption_content = data.get('caption_content')
-    if not caption_content and request.files:
-        caption_file = request.files.get('caption_file') or request.files.get('file')
-        if caption_file:
-            caption_content = caption_file.read().decode('utf-8', errors='ignore')
-
-    provider = YouTubeProvider()
-    upload_folder = current_app.config.get('UPLOAD_FOLDER')
-    api_key = current_app.config.get('YOUTUBE_API_KEY')
-
-    result = provider.retrieve_media(
-        source_reference=url,
-        destination_dir=upload_folder,
-        api_key=api_key,
-        caption_content=caption_content
-    )
-
-    if not result.get('success'):
-        return jsonify({
-            'success': False,
-            'message': result.get('error', 'YouTube transcript retrieval failed.'),
-            'code': result.get('code')
-        }), 400
-
-    # Clean up previous webinar file in current session if replaced
-    previous_upload = session.get('current_webinar_upload')
-    if previous_upload and previous_upload.get('storage_path'):
-        media_service.delete_uploaded_file(previous_upload['storage_path'])
-
-    # Stage retrieved transcript in session
-    session['current_webinar_upload'] = {
-        'source_type': 'youtube',
-        'input_type': result['input_type'],
-        'original_filename': result['original_filename'],
-        'safe_filename': result['safe_filename'],
-        'storage_path': result['storage_path'],
-        'file_size': result['file_size'],
-        'file_extension': result['file_extension'],
-        'source_url': url
-    }
-    session.modified = True
-
-    return jsonify({
-        'success': True,
-        'message': 'Official YouTube caption transcript retrieved and staged for processing.',
-        'details': session['current_webinar_upload']
-    }), 200
+            'message': f"Error retrieving YouTube media: {str(e)}",
+            'code': 'SERVER_ERROR'
+        }), 500
 
 @dashboard_bp.route('/api/upload-csv', methods=['POST'])
 @user_required
