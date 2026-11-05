@@ -224,6 +224,9 @@ def gdrive_connect():
         if code_verifier and isinstance(code_verifier, str):
             session['gdrive_code_verifier'] = code_verifier
         return redirect(authorization_url)
+    except ImportError:
+        flash('Google Drive OAuth packages are missing. Please install dependencies with: pip install -r requirements.txt', 'danger')
+        return redirect(url_for('dashboard.index'))
     except Exception as e:
         flash(f'Failed to initiate Google OAuth: {str(e)}', 'danger')
         return redirect(url_for('dashboard.index'))
@@ -259,6 +262,11 @@ def gdrive_callback():
 
     client_id = current_app.config.get('GOOGLE_CLIENT_ID') or os.environ.get('GOOGLE_CLIENT_ID')
     client_secret = current_app.config.get('GOOGLE_CLIENT_SECRET') or os.environ.get('GOOGLE_CLIENT_SECRET')
+
+    if not client_id or not client_secret:
+        flash('Google Drive OAuth credentials (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) are not configured on the server.', 'warning')
+        return redirect(url_for('dashboard.index'))
+
     redirect_uri = url_for('auth.gdrive_callback', _external=True)
 
     client_config = {
@@ -295,6 +303,9 @@ def gdrive_callback():
         }
         session.pop('gdrive_oauth_state', None)
         flash('Google Drive account connected successfully! You can now retrieve Drive recordings.', 'success')
+        return redirect(url_for('dashboard.index'))
+    except ImportError:
+        flash('Google Drive OAuth packages are missing. Please install dependencies with: pip install -r requirements.txt', 'danger')
         return redirect(url_for('dashboard.index'))
     except Exception as e:
         flash(f'Failed to complete Google OAuth token exchange: {str(e)}', 'danger')

@@ -18,5 +18,10 @@ google-genai>=0.1.0
 # Prompt 6: PDF Summary Generation
 reportlab>=4.1.0
 
+# Prompt A4: Google Drive Integration & OAuth
+google-auth>=2.20.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.100.0
+
 # Prompt A5: YouTube Media Retrieval using yt-dlp
 yt-dlp>=2026.10.26

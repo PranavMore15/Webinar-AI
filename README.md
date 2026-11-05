@@ -52,6 +52,7 @@ WebinarAI is a post-webinar knowledge distribution platform built for educationa
 - **FFmpeg & FFprobe:** Installed and verified in system PATH (`C:\Apps\ffmpeg\bin\ffmpeg.exe`)
 - **MySQL Server:** Community Server running at `127.0.0.1:3306` with schema `webinar_ai_db`
 - **Whisper Checkpoint:** Cached locally at `~/.cache/whisper/base.pt` (~142 MB)
+- **Google OAuth & APIs:** `google-auth`, `google-auth-oauthlib`, and `google-api-python-client` (included in `requirements.txt`)
 
 ---
 
@@ -59,7 +60,7 @@ WebinarAI is a post-webinar knowledge distribution platform built for educationa
 
 ### 1. Create and Activate Virtual Environment
 
-Open a PowerShell terminal in `c:\WebinarAI`:
+Open a PowerShell terminal in `c:\WebinarAI` (or your project directory):
 
 ```powershell
 # Create Python virtual environment (if not already created)
@@ -83,6 +84,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+This installs all core framework packages, database connectors, AI engines, and Google OAuth libraries (`google-auth`, `google-auth-oauthlib`, and `google-api-python-client`).
+
 ---
 
 ### 3. Database Initialization & Additive Migration (Idempotent)
@@ -99,8 +102,14 @@ python init_db.py --migrate
 
 ### 4. Launch the Application
 
+Always ensure your virtual environment is active before starting the server:
+
 ```powershell
+# If using the active virtual environment:
 python run.py
+
+# Or run directly via virtual environment python:
+.\.venv\Scripts\python.exe run.py
 ```
 
 The server will start on:
@@ -114,7 +123,7 @@ The server will start on:
 
 ### 5. Running Automated Tests
 
-To run the complete automated test suite (**243 tests** across 17 test modules):
+To run the complete automated test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -135,6 +144,8 @@ WebinarAI supports multi-source webinar media retrieval, eliminating manual down
    - User explicitly selects the target recording (never silently uploading entire directory trees).
 3. **Google Drive Integration**:
    - Connects user Google accounts via official Google OAuth 2.0 (`drive.readonly` scope) with CSRF state verification.
+   - Requires `google-auth-oauthlib`, `google-api-python-client`, and `google-auth` installed via `requirements.txt`.
+   - Requires `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` configured in `.env`.
    - Queries metadata via official Google Drive API v3.
    - Enforces download permission verification (`canDownload`), rate limit handling, and streams media directly into the processing pipeline.
    - Provides safe account disconnection endpoint (`/api/sources/gdrive/disconnect`).

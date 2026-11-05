@@ -8,9 +8,11 @@ Covers:
 4. Streaming download with byte-level limit enforcement and container signature verification.
 5. Endpoints: /api/sources/gdrive/status, /api/sources/gdrive/disconnect, /api/sources/gdrive/check, /api/sources/gdrive/retrieve.
 6. ProcessingJob submission after Google Drive media retrieval.
+7. Graceful handling of missing Google OAuth credentials and missing dependencies.
 """
 
 import os
+import sys
 import io
 import shutil
 import tempfile
@@ -114,6 +116,23 @@ class TestGDriveIntegration(unittest.TestCase):
         with self.client.session_transaction() as sess:
             self.assertIsNotNone(sess.get('gdrive_oauth_state'))
 
+    def test_oauth_connect_missing_credentials(self):
+        """Verify /auth/gdrive/connect warns when Google OAuth credentials are not configured."""
+        self._login()
+        with patch.dict(self.app.config, {'GOOGLE_CLIENT_ID': '', 'GOOGLE_CLIENT_SECRET': ''}):
+            with patch.dict(os.environ, {'GOOGLE_CLIENT_ID': '', 'GOOGLE_CLIENT_SECRET': ''}):
+                resp = self.client.get('/auth/gdrive/connect', follow_redirects=True)
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn(b'Google Drive OAuth credentials', resp.data)
+
+    def test_oauth_connect_missing_dependency(self):
+        """Verify /auth/gdrive/connect flashes actionable error message when google_auth_oauthlib is missing."""
+        self._login()
+        with patch.dict('sys.modules', {'google_auth_oauthlib': None, 'google_auth_oauthlib.flow': None}):
+            resp = self.client.get('/auth/gdrive/connect', follow_redirects=True)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn(b'Google Drive OAuth packages are missing', resp.data)
+
     def test_oauth_callback_csrf_rejection(self):
         """Verify /auth/gdrive/callback rejects mismatched or missing CSRF state."""
         self._login()
@@ -160,6 +179,31 @@ class TestGDriveIntegration(unittest.TestCase):
             self.assertNotIn('gdrive_code_verifier', sess)
 
         self.assertEqual(mock_flow.code_verifier, 'pkce_verifier_string_456')
+
+    def test_oauth_callback_missing_credentials(self):
+        """Verify /auth/gdrive/callback warns when Google OAuth credentials are not configured."""
+        self._login()
+        valid_state = 'valid_oauth_state_123'
+        with self.client.session_transaction() as sess:
+            sess['gdrive_oauth_state'] = valid_state
+
+        with patch.dict(self.app.config, {'GOOGLE_CLIENT_ID': '', 'GOOGLE_CLIENT_SECRET': ''}):
+            with patch.dict(os.environ, {'GOOGLE_CLIENT_ID': '', 'GOOGLE_CLIENT_SECRET': ''}):
+                resp = self.client.get(f'/auth/gdrive/callback?state={valid_state}&code=sample_auth_code', follow_redirects=True)
+                self.assertEqual(resp.status_code, 200)
+                self.assertIn(b'Google Drive OAuth credentials', resp.data)
+
+    def test_oauth_callback_missing_dependency(self):
+        """Verify /auth/gdrive/callback flashes actionable error message when google_auth_oauthlib is missing."""
+        self._login()
+        valid_state = 'valid_oauth_state_123'
+        with self.client.session_transaction() as sess:
+            sess['gdrive_oauth_state'] = valid_state
+
+        with patch.dict('sys.modules', {'google_auth_oauthlib': None, 'google_auth_oauthlib.flow': None}):
+            resp = self.client.get(f'/auth/gdrive/callback?state={valid_state}&code=sample_auth_code', follow_redirects=True)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn(b'Google Drive OAuth packages are missing', resp.data)
 
     def test_disconnect_endpoint(self):
         """Verify /api/sources/gdrive/disconnect clears stored token from session."""
@@ -385,4 +429,3 @@ class TestGDriveIntegration(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
