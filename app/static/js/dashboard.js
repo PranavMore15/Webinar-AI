@@ -1328,7 +1328,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 const cap = label.charAt(0).toUpperCase() + label.slice(1);
                 statusCell.innerHTML = `
                     <div class="d-inline-flex align-items-center gap-1">
-                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle" title="${escapeHtml(job.stage_label || cap)}">
                             <span class="spinner-border spinner-border-sm me-1" style="width: 0.72rem; height: 0.72rem;"></span>${escapeHtml(cap)}
                         </span>
                         <button type="button" class="btn btn-sm btn-outline-danger py-0 px-2 rounded-pill small fw-semibold btn-cancel-job" onclick="cancelJobExecution(${job.id})" title="Cancel Job Execution">

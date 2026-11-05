@@ -161,5 +161,76 @@ class TestDashboardRoutes(unittest.TestCase):
         self.assertEqual(res['overall_status'], 'cancelled')
         self.assertEqual(res['stage'], 'cancelled')
 
+    def test_job_status_transcribing_dynamic_label_and_percent(self):
+        """Verify /api/jobs/<id>/status dynamically calculates progress and label during transcription."""
+        self.job.overall_status = 'transcribing'
+        self.job.error_message = 'Transcribing speech with Gemini AI (high-speed path)...'
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.get(f'/api/jobs/{self.job.id}/status')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data['success'])
+        job_data = data['job']
+        self.assertEqual(job_data['progress_percent'], 30)
+        self.assertIn('Transcribing speech with Gemini AI', job_data['stage_label'])
+
+    def test_job_status_transcribing_audio_extraction(self):
+        """Verify status reflects audio extraction milestone."""
+        self.job.overall_status = 'transcribing'
+        self.job.error_message = 'Extracting audio track from webinar video...'
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.get(f'/api/jobs/{self.job.id}/status')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        job_data = data['job']
+        self.assertEqual(job_data['progress_percent'], 20)
+        self.assertIn('Extracting audio track', job_data['stage_label'])
+
+    def test_job_status_transcribing_whisper_chunks(self):
+        """Verify status reflects chunk progress during local Whisper inference."""
+        self.job.overall_status = 'transcribing'
+        self.job.error_message = 'Transcribing audio chunk 1 of 2 with local Whisper AI...'
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.get(f'/api/jobs/{self.job.id}/status')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        job_data = data['job']
+        self.assertEqual(job_data['progress_percent'], 30)
+        self.assertIn('chunk 1 of 2', job_data['stage_label'])
+
+    def test_active_job_statuses_includes_dynamic_transcribing_label(self):
+        """Verify /api/jobs/active-statuses includes dynamic stage_label during transcription."""
+        self.job.overall_status = 'transcribing'
+        self.job.error_message = 'Transcribing speech with Gemini AI (high-speed path)...'
+        db.session.commit()
+
+        with self.client.session_transaction() as sess:
+            sess['user_id'] = self.user.id
+            sess['role'] = 'user'
+
+        resp = self.client.get('/api/jobs/active-statuses')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data['success'])
+        job = data['jobs'][0]
+        self.assertEqual(job['progress_percent'], 30)
+        self.assertIn('Gemini AI', job['stage_label'])
+
 if __name__ == '__main__':
     unittest.main()
+

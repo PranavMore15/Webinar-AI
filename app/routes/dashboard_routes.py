@@ -1021,6 +1021,30 @@ def submit_job():
             'message': f"Database transaction failed while creating job: {str(e)}"
         }), 500
 
+def get_transcription_stage_progress(job):
+    """Calculates granular stage label and dynamic progress percentage for transcription."""
+    if job.input_type == 'transcript':
+        return 25, 'Step 1/4: Ingesting & normalizing transcript...'
+
+    sub_msg = job.error_message
+    if not sub_msg or sub_msg.startswith('Transcript Ingestion Failed') or sub_msg.startswith('Processing failed'):
+        return 25, 'Step 1/4: Transcribing speech with AI...'
+
+    progress = 25
+    if 'Extracting audio' in sub_msg:
+        progress = 20
+    elif 'Gemini AI' in sub_msg:
+        progress = 30
+    elif 'chunk' in sub_msg.lower():
+        m = re.search(r'chunk\s+(\d+)\s+of\s+(\d+)', sub_msg, re.IGNORECASE)
+        if m:
+            curr, total = int(m.group(1)), int(m.group(2))
+            progress = min(40, 20 + int((curr / max(total, 1)) * 20))
+        else:
+            progress = 30
+
+    return progress, f"Step 1/4: {sub_msg}"
+
 @dashboard_bp.route('/api/jobs/<int:job_id>', methods=['GET'])
 @dashboard_bp.route('/api/jobs/<int:job_id>/status', methods=['GET'])
 @user_required
@@ -1039,15 +1063,10 @@ def get_job_status(job_id):
     if job.user_id != user_id and user_role != 'admin':
         return jsonify({'success': False, 'message': 'Access denied: You do not own this processing job.'}), 403
 
-    transcribing_label = (
-        'Step 1/4: Ingesting & normalizing transcript...'
-        if job.input_type == 'transcript'
-        else 'Step 1/4: Transcribing speech with Whisper AI (running on CPU)...'
-    )
     stage_labels = {
         'ready': 'Queued in database',
         'processing': 'Processing started...',
-        'transcribing': transcribing_label,
+        'transcribing': 'Step 1/4: Transcribing speech with AI...',
         'summarizing': 'Step 2/4: Generating structured AI summary with Gemini...',
         'generating_pdf': 'Step 3/4: Compiling ReportLab PDF brief...',
         'sending_emails': 'Step 4/4: Delivering summary emails via SMTP...',
@@ -1068,6 +1087,10 @@ def get_job_status(job_id):
         'cancelled': 100,
         'failed': 100
     }
+    if job.overall_status == 'transcribing':
+        trans_pct, trans_label = get_transcription_stage_progress(job)
+        stage_labels['transcribing'] = trans_label
+        progress_map['transcribing'] = trans_pct
 
     is_pdf_ready = bool(job.pdf_status == 'completed' and job.pdf_path)
 
@@ -1196,31 +1219,36 @@ def get_active_job_statuses():
         'failed': 100
     }
 
+    def format_active_job(j):
+        p_pct = progress_map.get(j.overall_status, 10)
+        s_lbl = j.overall_status.capitalize()
+        if j.overall_status == 'transcribing':
+            p_pct, s_lbl = get_transcription_stage_progress(j)
+        return {
+            'id': j.id,
+            'title': j.title,
+            'input_type': j.input_type,
+            'input_file_name': j.input_file_name,
+            'overall_status': j.overall_status,
+            'transcript_status': j.transcript_status,
+            'summary_status': j.summary_status,
+            'pdf_status': j.pdf_status,
+            'email_status': j.email_status,
+            'pdf_ready': bool(j.pdf_status == 'completed' and j.pdf_path),
+            'pdf_url': url_for('dashboard.download_job_pdf', job_id=j.id) if (j.pdf_status == 'completed' and j.pdf_path) else None,
+            'progress_percent': p_pct,
+            'stage_label': s_lbl,
+            'is_active': j.overall_status in ['ready', 'processing', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails'],
+            'successful_emails': j.successful_emails,
+            'failed_emails': j.failed_emails,
+            'total_recipients': j.total_recipients,
+            'error_message': j.error_message,
+            'created_at': j.created_at.strftime('%Y-%m-%d %H:%M:%S') if j.created_at else ''
+        }
+
     return jsonify({
         'success': True,
-        'jobs': [
-            {
-                'id': j.id,
-                'title': j.title,
-                'input_type': j.input_type,
-                'input_file_name': j.input_file_name,
-                'overall_status': j.overall_status,
-                'transcript_status': j.transcript_status,
-                'summary_status': j.summary_status,
-                'pdf_status': j.pdf_status,
-                'email_status': j.email_status,
-                'pdf_ready': bool(j.pdf_status == 'completed' and j.pdf_path),
-                'pdf_url': url_for('dashboard.download_job_pdf', job_id=j.id) if (j.pdf_status == 'completed' and j.pdf_path) else None,
-                'progress_percent': progress_map.get(j.overall_status, 10),
-                'is_active': j.overall_status in ['ready', 'processing', 'transcribing', 'summarizing', 'generating_pdf', 'sending_emails'],
-                'successful_emails': j.successful_emails,
-                'failed_emails': j.failed_emails,
-                'total_recipients': j.total_recipients,
-                'error_message': j.error_message,
-                'created_at': j.created_at.strftime('%Y-%m-%d %H:%M:%S') if j.created_at else ''
-            }
-            for j in jobs
-        ]
+        'jobs': [format_active_job(j) for j in jobs]
     }), 200
 
 

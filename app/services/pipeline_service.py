@@ -61,20 +61,32 @@ def run_job_pipeline(job_id: int, app: Flask) -> Dict[str, Any]:
             logger.info(f"[Pipeline] Job #{job_id} was cancelled by user. Halting pipeline execution.")
             return {'success': False, 'stage': 'cancelled', 'error': 'Job cancelled by user.'}
         # ---------------------------------------------------------------------
+        def on_transcription_progress(message: str):
+            try:
+                db.session.expire_all()
+                pj = db.session.get(ProcessingJob, job_id)
+                if pj and pj.overall_status not in ('cancelled', 'failed'):
+                    pj.error_message = message
+                    db.session.commit()
+            except Exception as pe:
+                logger.debug(f"[Pipeline] Could not persist transcription progress: {pe}")
+
         try:
             job.overall_status = 'transcribing'
             job.transcript_status = 'processing'
-            job.error_message = None
+            job.error_message = 'Extracting audio track from webinar video...' if job.input_type == 'video' else 'Ingesting transcript...'
             db.session.commit()
 
             logger.info(f"[Pipeline] Job #{job.id}: Processing webinar transcript ({job.input_type})...")
             transcript_res = transcript_service.process_webinar_to_transcript(
                 job.input_type,
-                job.input_file_path
+                job.input_file_path,
+                progress_callback=on_transcription_progress
             )
             transcript_text = transcript_res.get('transcript_text', '')
 
             job.transcript_status = 'completed'
+            job.error_message = None
             db.session.commit()
             logger.info(f"[Pipeline] Job #{job.id}: Transcript processing completed.")
 

@@ -8,6 +8,7 @@ timestamps, formatting artifacts, and cue metadata.
 import os
 import re
 import html
+from typing import Optional, Callable
 
 class TranscriptParseError(Exception):
     """Exception raised when transcript parsing or validation fails."""
@@ -262,12 +263,16 @@ def parse_transcript_by_type(file_path: str, input_type: str = None) -> dict:
     else:
         raise TranscriptParseError(f"Unsupported transcript format '.{ext}'. Supported formats are .txt and .vtt.")
 
-def process_webinar_to_transcript(input_type: str, file_path: str) -> dict:
+def process_webinar_to_transcript(
+    input_type: str,
+    file_path: str,
+    progress_callback: Optional[Callable[[str], None]] = None
+) -> dict:
     """
     Unified processing entry point:
     - If input_type == 'transcript': parses TXT or VTT directly; DOES NOT invoke FFmpeg or Whisper.
-    - If input_type == 'audio': skips video extraction; chunks if needed and transcribes via Whisper.
-    - If input_type == 'video': extracts audio via FFmpeg, chunks if needed, and transcribes via Whisper.
+    - If input_type == 'audio': transcribes directly using hybrid dispatcher (Gemini fast path with Whisper fallback).
+    - If input_type == 'video': extracts audio via FFmpeg and transcribes via hybrid dispatcher.
     """
     if input_type == 'transcript':
         return parse_transcript_by_type(file_path)
@@ -275,24 +280,15 @@ def process_webinar_to_transcript(input_type: str, file_path: str) -> dict:
         from app.services import audio_service, transcription_service
         if input_type == 'audio':
             audio_path = file_path
-            chunks = []
-            try:
-                chunks = audio_service.chunk_audio_if_needed(audio_path)
-                result = transcription_service.transcribe_audio_chunks(chunks)
-                return result
-            finally:
-                if chunks and chunks != [audio_path]:
-                    audio_service.delete_audio_files(chunks)
+            return transcription_service.transcribe_audio_hybrid(audio_path, progress_callback=progress_callback)
         else:
+            if progress_callback:
+                progress_callback('Extracting audio track from webinar video...')
             audio_info = audio_service.extract_audio_from_video(file_path)
             audio_path = audio_info['audio_path']
-            chunks = []
             try:
-                chunks = audio_service.chunk_audio_if_needed(audio_path)
-                result = transcription_service.transcribe_audio_chunks(chunks)
-                return result
+                return transcription_service.transcribe_audio_hybrid(audio_path, progress_callback=progress_callback)
             finally:
-                to_delete = list(set([audio_path] + chunks))
-                audio_service.delete_audio_files(to_delete)
+                audio_service.delete_audio_files([audio_path])
     else:
         raise TranscriptParseError(f"Unknown input type '{input_type}'. Must be 'video', 'audio', or 'transcript'.")

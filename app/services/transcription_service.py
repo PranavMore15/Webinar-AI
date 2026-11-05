@@ -5,9 +5,12 @@ ordered audio chunk stitching, and fallback handling for offline/test environmen
 """
 
 import os
-from typing import Optional, Dict, Any, List
+import logging
+from typing import Optional, Dict, Any, List, Callable
 from flask import current_app
 from app.services.transcript_service import clean_and_normalize_transcript
+
+logger = logging.getLogger(__name__)
 
 class TranscriptionError(Exception):
     """Exception raised when speech-to-text transcription fails."""
@@ -177,11 +180,152 @@ def transcribe_audio_file(
         'segments': result.get('segments', [])
     }
 
+def get_gemini_api_key() -> Optional[str]:
+    """Retrieves GEMINI_API_KEY from Flask current_app config or os.environ."""
+    try:
+        key = current_app.config.get('GEMINI_API_KEY')
+        if key and key.strip():
+            return key.strip()
+    except RuntimeError:
+        pass
+
+    key = os.getenv('GEMINI_API_KEY')
+    return key.strip() if key and key.strip() else None
+
+def get_gemini_model() -> str:
+    """Retrieves GEMINI_MODEL from Flask current_app config or os.environ."""
+    try:
+        model = current_app.config.get('GEMINI_MODEL')
+        if model and model.strip():
+            return model.strip()
+    except RuntimeError:
+        pass
+
+    return os.getenv('GEMINI_MODEL', 'gemini-3.6-flash').strip()
+
+def parse_gemini_transcript_response(response_text: str) -> str:
+    """
+    Extracts and standardizes transcript text from Gemini API response.
+    Handles raw text, markdown blocks, and JSON-wrapped transcript envelopes.
+    """
+    if not response_text:
+        return ""
+
+    raw = response_text.strip()
+    # Check if enclosed in markdown code fences
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            fence_lang = lines[0].lstrip("`").strip().lower()
+            inner = "\n".join(lines[1:-1]).strip()
+            if fence_lang == "json" or (inner.startswith("{") and inner.endswith("}")):
+                try:
+                    import json
+                    parsed = json.loads(inner)
+                    if isinstance(parsed, dict):
+                        return parsed.get("transcript") or parsed.get("text") or inner
+                except Exception:
+                    pass
+            raw = inner
+
+    # Check for direct JSON { "transcript": "..." } or { "text": "..." }
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            import json
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and ("transcript" in parsed or "text" in parsed):
+                return str(parsed.get("transcript") or parsed.get("text") or "")
+        except Exception:
+            pass
+
+    return raw
+
+def transcribe_audio_with_gemini(
+    audio_path: str,
+    model_name: Optional[str] = None,
+    client: Optional[Any] = None
+) -> dict:
+    """
+    Transcribes audio using Google Gemini multimodal audio processing.
+    Uploads audio file using Google Gen AI File API, requests verbatim transcript,
+    and guarantees immediate remote file deletion in finally block.
+    """
+    if not os.path.exists(audio_path):
+        raise TranscriptionError(f"Audio file not found for Gemini transcription: {audio_path}")
+
+    if os.path.getsize(audio_path) == 0:
+        raise TranscriptionError("Audio file is empty (0 bytes). Cannot transcribe.")
+
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise TranscriptionError("GEMINI_API_KEY is not configured for Gemini speech-to-text.")
+
+    from google import genai
+    from google.genai import types
+
+    if client is None:
+        client = genai.Client(api_key=api_key)
+
+    resolved_model = model_name or get_gemini_model()
+    uploaded_file = None
+
+    try:
+        uploaded_file = client.files.upload(file=audio_path)
+        system_instruction = (
+            "You are an expert speech-to-text transcription engine. "
+            "Your task is to listen to the provided audio file and generate an accurate, verbatim transcript "
+            "of all spoken speech. Maintain proper capitalization and punctuation. "
+            "Preserve speaker labels if distinguishable (e.g., 'Speaker 1:', 'Dr. Smith:'). "
+            "Output ONLY the transcript text without any introductory comments or conversational filler."
+        )
+        prompt = (
+            "Transcribe all speech from this audio recording verbatim. "
+            "Do not summarize. Provide the complete transcript text."
+        )
+
+        response = client.models.generate_content(
+            model=resolved_model,
+            contents=[uploaded_file, prompt],
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.0
+            )
+        )
+    except Exception as e:
+        raise TranscriptionError(f"Gemini API audio transcription failed: {str(e)}")
+    finally:
+        if uploaded_file is not None and hasattr(client, 'files'):
+            try:
+                client.files.delete(name=uploaded_file.name)
+            except Exception as del_err:
+                logger.warning(f"Failed to delete uploaded Gemini file {getattr(uploaded_file, 'name', '')}: {del_err}")
+
+    raw_output = getattr(response, 'text', '') or ''
+    extracted_text = parse_gemini_transcript_response(raw_output)
+    cleaned_text = clean_and_normalize_transcript(extracted_text)
+
+    words = cleaned_text.split()
+    if not cleaned_text or len(words) < 2:
+        raise TranscriptionError("Transcription completed but returned no spoken speech (silent or unintelligible audio).")
+
+    return {
+        'success': True,
+        'source_type': 'video',
+        'transcript_text': cleaned_text,
+        'word_count': len(words),
+        'character_count': len(cleaned_text),
+        'chunks_processed': 1,
+        'language': 'en',
+        'model_used': resolved_model,
+        'engine': 'gemini'
+    }
+
 def transcribe_audio_chunks(
     audio_chunks: list[str],
     model_name: Optional[str] = None,
     device: Optional[str] = None,
-    language: Optional[str] = None
+    language: Optional[str] = None,
+    progress_callback: Optional[Callable[[str], None]] = None
 ) -> dict:
     """
     Transcribes an ordered sequence of audio chunks and seamlessly concatenates
@@ -193,10 +337,14 @@ def transcribe_audio_chunks(
     combined_text_parts = []
     total_segments = []
     detected_language = None
+    total_chunks = len(audio_chunks)
 
     for idx, chunk_path in enumerate(audio_chunks, start=1):
         if not os.path.exists(chunk_path):
             raise TranscriptionError(f"Audio chunk #{idx} is missing from disk: {chunk_path}")
+
+        if progress_callback:
+            progress_callback(f"Transcribing audio chunk {idx} of {total_chunks} with local Whisper AI...")
 
         chunk_result = transcribe_audio_file(
             audio_path=chunk_path,
@@ -225,5 +373,49 @@ def transcribe_audio_chunks(
         'character_count': len(full_transcript),
         'chunks_processed': len(audio_chunks),
         'language': detected_language or 'en',
-        'model_used': model_name or get_configured_model_name()
+        'model_used': model_name or get_configured_model_name(),
+        'engine': 'whisper'
     }
+
+def transcribe_audio_hybrid(
+    audio_path: str,
+    progress_callback: Optional[Callable[[str], None]] = None,
+    model_name: Optional[str] = None
+) -> dict:
+    """
+    Hybrid speech-to-text dispatcher:
+    1. Attempts high-speed Gemini multimodal audio transcription if GEMINI_API_KEY is configured.
+    2. Gracefully falls back to local Whisper CPU transcription if Gemini fails, offline, or unconfigured.
+    """
+    api_key = get_gemini_api_key()
+    is_testing = False
+    try:
+        is_testing = current_app.config.get('TESTING', False)
+    except RuntimeError:
+        pass
+
+    if api_key and not is_testing:
+        try:
+            if progress_callback:
+                progress_callback("Transcribing speech with Gemini AI (high-speed path)...")
+            logger.info("Initiating Gemini AI audio speech transcription...")
+            return transcribe_audio_with_gemini(audio_path, model_name=model_name)
+        except Exception as e:
+            logger.warning(
+                f"Gemini speech transcription failed or unavailable: {str(e)}. "
+                "Switching to local Whisper speech-to-text fallback."
+            )
+            if progress_callback:
+                progress_callback("Gemini API unavailable. Falling back to local Whisper speech-to-text...")
+
+    # Fallback to local Whisper
+    if progress_callback:
+        progress_callback("Transcribing speech with local Whisper AI...")
+
+    from app.services import audio_service
+    chunks = audio_service.chunk_audio_if_needed(audio_path)
+    try:
+        return transcribe_audio_chunks(chunks, progress_callback=progress_callback)
+    finally:
+        if chunks and chunks != [audio_path]:
+            audio_service.delete_audio_files(chunks)

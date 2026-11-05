@@ -28,6 +28,9 @@ from app.services.transcription_service import (
     get_configured_model_name,
     get_configured_device,
     transcribe_audio_chunks,
+    transcribe_audio_with_gemini,
+    transcribe_audio_hybrid,
+    parse_gemini_transcript_response,
     TranscriptionError
 )
 
@@ -375,6 +378,144 @@ $synth.Dispose()
             'hello' in transcribed_lower or 'engineering' in transcribed_lower or 'whisper' in transcribed_lower,
             f"Expected keywords in transcript, got: {result['transcript_text']}"
         )
+
+    # -------------------------------------------------------------------------
+    # Gemini AI Speech-to-Text & Hybrid Fallback Tests
+    # -------------------------------------------------------------------------
+    def test_parse_gemini_transcript_response_variants(self):
+        # Raw plain text
+        raw = "Welcome everyone to today's machine learning webinar."
+        self.assertEqual(parse_gemini_transcript_response(raw), raw)
+
+        # Markdown fenced code block
+        fenced = "```\nWelcome everyone to today's webinar.\n```"
+        self.assertEqual(parse_gemini_transcript_response(fenced), "Welcome everyone to today's webinar.")
+
+        # JSON wrapped
+        json_wrapped = '{"transcript": "Speaker 1: Hello and welcome to deep learning."}'
+        self.assertEqual(parse_gemini_transcript_response(json_wrapped), "Speaker 1: Hello and welcome to deep learning.")
+
+        # Markdown fenced JSON
+        fenced_json = '```json\n{"transcript": "Lecture on quantum computing."}\n```'
+        self.assertEqual(parse_gemini_transcript_response(fenced_json), "Lecture on quantum computing.")
+
+    def test_transcribe_audio_with_gemini_success_and_cleanup(self):
+        dummy_wav = os.path.join(self.temp_dir, 'sample_gemini.wav')
+        with open(dummy_wav, 'wb') as f:
+            f.write(b'RIFF' + b'\x00' * 40)
+
+        mock_client = MagicMock()
+        mock_file = MagicMock()
+        mock_file.name = "files/test-audio-file-123"
+        mock_client.files.upload.return_value = mock_file
+
+        mock_response = MagicMock()
+        mock_response.text = "Speaker: Welcome to Advanced Artificial Intelligence."
+        mock_client.models.generate_content.return_value = mock_response
+
+        with patch('app.services.transcription_service.get_gemini_api_key', return_value='fake_key'):
+            result = transcribe_audio_with_gemini(dummy_wav, client=mock_client)
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['engine'], 'gemini')
+        self.assertIn('Advanced Artificial Intelligence', result['transcript_text'])
+        # Verify remote file deletion was called
+        mock_client.files.delete.assert_called_once_with(name="files/test-audio-file-123")
+
+    def test_transcribe_audio_with_gemini_missing_api_key_raises(self):
+        dummy_wav = os.path.join(self.temp_dir, 'no_key.wav')
+        with open(dummy_wav, 'wb') as f:
+            f.write(b'RIFF' + b'\x00' * 40)
+
+        with patch('app.services.transcription_service.get_gemini_api_key', return_value=None):
+            with self.assertRaises(TranscriptionError) as ctx:
+                transcribe_audio_with_gemini(dummy_wav)
+            self.assertIn("GEMINI_API_KEY is not configured", str(ctx.exception))
+
+    def test_transcribe_audio_hybrid_gemini_success(self):
+        dummy_wav = os.path.join(self.temp_dir, 'hybrid_gemini.wav')
+        with open(dummy_wav, 'wb') as f:
+            f.write(b'RIFF' + b'\x00' * 40)
+
+        progress_msgs = []
+        def on_progress(msg):
+            progress_msgs.append(msg)
+
+        expected_result = {
+            'success': True,
+            'source_type': 'video',
+            'transcript_text': 'Fast transcription from Gemini AI',
+            'word_count': 5,
+            'character_count': 32,
+            'chunks_processed': 1,
+            'language': 'en',
+            'engine': 'gemini'
+        }
+
+        # Override TESTING flag to simulate production execution
+        self.app.config['TESTING'] = False
+        with patch('app.services.transcription_service.get_gemini_api_key', return_value='valid_key'), \
+             patch('app.services.transcription_service.transcribe_audio_with_gemini', return_value=expected_result) as mock_gemini, \
+             patch('app.services.transcription_service.transcribe_audio_chunks') as mock_chunks:
+
+            res = transcribe_audio_hybrid(dummy_wav, progress_callback=on_progress)
+            self.assertEqual(res['engine'], 'gemini')
+            mock_gemini.assert_called_once_with(dummy_wav, model_name=None)
+            mock_chunks.assert_not_called()
+            self.assertTrue(any('Gemini AI' in m for m in progress_msgs))
+
+    def test_transcribe_audio_hybrid_fallback_on_gemini_error(self):
+        dummy_wav = os.path.join(self.temp_dir, 'hybrid_fallback.wav')
+        with open(dummy_wav, 'wb') as f:
+            f.write(b'RIFF' + b'\x00' * 40)
+
+        progress_msgs = []
+        def on_progress(msg):
+            progress_msgs.append(msg)
+
+        whisper_result = {
+            'success': True,
+            'source_type': 'video',
+            'transcript_text': 'Fallback transcription from local Whisper AI',
+            'word_count': 6,
+            'character_count': 42,
+            'chunks_processed': 1,
+            'language': 'en',
+            'engine': 'whisper'
+        }
+
+        self.app.config['TESTING'] = False
+        with patch('app.services.transcription_service.get_gemini_api_key', return_value='valid_key'), \
+             patch('app.services.transcription_service.transcribe_audio_with_gemini', side_effect=Exception("Gemini quota 429")), \
+             patch('app.services.audio_service.chunk_audio_if_needed', return_value=[dummy_wav]), \
+             patch('app.services.transcription_service.transcribe_audio_chunks', return_value=whisper_result) as mock_chunks:
+
+            res = transcribe_audio_hybrid(dummy_wav, progress_callback=on_progress)
+            self.assertEqual(res['engine'], 'whisper')
+            mock_chunks.assert_called_once()
+            self.assertTrue(any('Falling back to local Whisper' in m for m in progress_msgs))
+
+    def test_transcribe_audio_chunks_invokes_progress_callback(self):
+        dummy_chunk = os.path.join(self.temp_dir, 'chunk_001.wav')
+        with open(dummy_chunk, 'wb') as f:
+            f.write(b'RIFF' + b'\x00' * 40)
+
+        progress_msgs = []
+        def on_progress(msg):
+            progress_msgs.append(msg)
+
+        mock_file_res = {
+            'success': True,
+            'transcript_text': 'Spoken content chunk',
+            'language': 'en',
+            'segments': []
+        }
+
+        with patch('app.services.transcription_service.transcribe_audio_file', return_value=mock_file_res):
+            res = transcribe_audio_chunks([dummy_chunk], progress_callback=on_progress)
+            self.assertTrue(res['success'])
+            self.assertTrue(len(progress_msgs) > 0)
+            self.assertIn('chunk 1 of 1', progress_msgs[0])
 
 if __name__ == '__main__':
     unittest.main()
